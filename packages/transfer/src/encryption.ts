@@ -14,13 +14,13 @@ export async function deriveKey(passphrase: string, saltB64: string): Promise<Cr
   const salt = base64ToBytes(saltB64);
   const km = await crypto.subtle.importKey(
     "raw",
-    new TextEncoder().encode(passphrase),
+    new TextEncoder().encode(passphrase) as unknown as BufferSource,
     "PBKDF2",
     false,
     ["deriveKey"],
   );
   return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    { name: "PBKDF2", salt: salt as unknown as BufferSource, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
     km,
     { name: "AES-GCM", length: 256 },
     false,
@@ -39,7 +39,7 @@ export async function encryptChunk(key: CryptoKey, plaintext: Uint8Array): Promi
   const iv = new Uint8Array(12);
   crypto.getRandomValues(iv);
   const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext),
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, plaintext as unknown as BufferSource),
   );
   const out = new Uint8Array(iv.length + ct.length);
   out.set(iv, 0);
@@ -51,7 +51,7 @@ export async function decryptChunk(key: CryptoKey, framed: Uint8Array): Promise<
   if (framed.byteLength < 12) throw new Error("encrypted chunk too short");
   const iv = framed.subarray(0, 12);
   const ct = framed.subarray(12);
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, ct as unknown as BufferSource);
   return new Uint8Array(pt);
 }
 

@@ -6,7 +6,22 @@
       "Bash(bun install *)",
       "Bash(bun test *)",
       "Bash(bun --cwd /Users/karevaraprasad/DropBeam/apps/cli run typecheck)",
-      "Bash(bash scripts/e2e.sh)"
+      "Bash(bash scripts/e2e.sh)",
+      "Bash(bun add *)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs)",
+      "Bash(sh -s -- -y --default-toolchain stable)",
+      "Bash(python3 -c \"import sys,json; p=json.load\\(sys.stdin\\); print\\(p.get\\('types',p.get\\('typings',''\\)\\)\\)\")",
+      "Bash(bash /Users/karevaraprasad/DropBeam/scripts/e2e.sh)",
+      "Bash(python3 -c \"import sys,json; p=json.load\\(sys.stdin\\); print\\(p.get\\('scripts',{}\\).get\\('install',''\\)\\)\")",
+      "Bash(npx prebuild-install *)",
+      "Bash(bun run *)",
+      "Read(//usr/local/bin/**)",
+      "Read(//Users/karevaraprasad/.bun/bin/**)",
+      "Bash(/Users/karevaraprasad/.bun/bin/bun run *)",
+      "Bash(bun --cwd packages/transfer run typecheck)",
+      "Bash(npx tsc *)"
     ]
   }
 }

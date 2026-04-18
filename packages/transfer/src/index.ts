@@ -8,3 +8,5 @@ export * from "./sender.js";
 export * from "./receiver.js";
 export * from "./signalingClient.js";
 export * from "./inMemoryPair.js";
+export * from "./wasmCore.js";
+export * from "./quicTransport.js";

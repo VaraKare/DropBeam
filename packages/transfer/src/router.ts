@@ -13,7 +13,8 @@
 
 export type Transport =
   | "loopback"
-  | "lan"
+  | "lan-quic"   // Rust/quinn QUIC — zero-RTT UDP on LAN, fastest
+  | "lan"        // WebRTC over LAN (QUIC unavailable fallback)
   | "wifi-direct"
   | "p2p-direct"
   | "p2p-relayed";
@@ -29,6 +30,8 @@ export interface NetworkProbe {
   needsRelay: boolean;
   /** Loopback hint (same host, useful for tests). */
   sameHost: boolean;
+  /** dropbeam-quic binary present AND UDP reachable on LAN peer. */
+  quicAvailable: boolean;
 }
 
 export interface ModeHint {
@@ -66,12 +69,22 @@ export function decideRoute(probe: NetworkProbe, hint: ModeHint = {}): RouteDeci
 
   if (hint.preferred === "nearby" || (probe.sameLan && hint.preferred !== "remote")) {
     if (probe.sameLan) {
+      // QUIC is strictly better than WebRTC on LAN: zero-RTT, pure UDP, no STUN dance.
+      if (probe.quicAvailable) {
+        return {
+          transport: "lan-quic",
+          lanes: bulk ? 8 : 4,
+          chunkSize: bulk ? 128 * KB : 64 * KB,
+          appLayerEncryption: hint.preferred === "vault",
+          rationale: "LAN + QUIC binary available — zero-RTT UDP",
+        };
+      }
       return {
         transport: "lan",
         lanes: bulk ? 8 : 4,
         chunkSize: bulk ? 128 * KB : 64 * KB,
         appLayerEncryption: hint.preferred === "vault",
-        rationale: "same LAN detected",
+        rationale: "same LAN, QUIC unavailable → WebRTC LAN",
       };
     }
     if (probe.nearbyAvailable) {

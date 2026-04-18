@@ -23,12 +23,27 @@ import type {
 const STUN_DEFAULT = "stun:stun.l.google.com:19302";
 
 export interface WeriftAdapterOptions {
-  iceServers?: { urls: string; username?: string; credential?: string }[];
+  iceServers?: { urls: string | string[]; username?: string; credential?: string }[];
 }
 
 export function makeWeriftPeer(opts: WeriftAdapterOptions = {}): PeerConnection {
+  const defaultIceServers = [
+    // 1. First attempt: Direct P2P via Google's free STUN (Fastest)
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    
+    // 2. Fallback: TURN servers for strict NATs/Firewalls (Guarantees connection)
+    // NOTE: For production, you will need a paid TURN service like Twilio, Metered, or Coturn.
+    // Replace these credentials with your actual TURN provider later.
+    {
+      urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+      username: 'YOUR_TURN_USERNAME',
+      credential: 'YOUR_TURN_PASSWORD'
+    }
+  ];
+
   const pc = new RTCPeerConnection({
-    iceServers: opts.iceServers ?? [{ urls: STUN_DEFAULT }],
+    iceServers: (opts.iceServers ?? defaultIceServers) as any,
   });
   return wrap(pc);
 }
@@ -115,7 +130,7 @@ function wrapChannel(ch: RTCDataChannel): DataChannel {
         ch.send(Buffer.from(data));
       } else {
         const view = data;
-        ch.send(Buffer.from(view.buffer, view.byteOffset, view.byteLength));
+        ch.send(Buffer.from(view.buffer as ArrayBuffer, view.byteOffset, view.byteLength));
       }
     },
     close() {
@@ -137,7 +152,7 @@ function wrapChannel(ch: RTCDataChannel): DataChannel {
       adapter.onmessage?.(data);
     } else {
       const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-      adapter.onmessage?.(ab);
+      adapter.onmessage?.(ab as ArrayBuffer);
     }
   });
   ch.bufferedAmountLow.subscribe(() => adapter.onbufferedamountlow?.());

@@ -167,7 +167,7 @@ export class TransferSender {
         if (lane.bufferedAmount > this.highWater) {
           await waitForDrain(lane, this.lowWater);
         }
-        lane.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength));
+        lane.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer);
 
         chunkIndex++;
         fileBytesSent += chunk.byteLength;

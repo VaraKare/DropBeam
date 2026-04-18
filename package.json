@@ -26,5 +26,8 @@
   },
   "engines": {
     "bun": ">=1.1.0"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.32.2"
   }
 }

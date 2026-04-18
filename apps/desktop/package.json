@@ -1,0 +1,23 @@
+{
+  "name": "@dropbeam/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-shell": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
+    "@tauri-apps/plugin-notification": "^2",
+    "@dropbeam/transfer": "workspace:*",
+    "@dropbeam/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

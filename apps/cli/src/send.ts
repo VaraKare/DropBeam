@@ -4,12 +4,12 @@ import { resolve } from "node:path";
 import {
   SignalingClient,
   TransferSender,
-  type DeviceInfo,
   type FileSource,
 } from "@dropbeam/transfer";
+import type { DeviceInfo } from "@dropbeam/protocol";
 import { WebSocket as NodeWS } from "ws";
 import { fileSource } from "./fsIo.js";
-import { makeWeriftPeer } from "./weriftAdapter.js";
+import { makePeer } from "./peerFactory.js";
 import { offer } from "./peerHandshake.js";
 
 export interface SendArgs {
@@ -19,6 +19,10 @@ export interface SendArgs {
   passphrase?: string;
   /** When set, joins an existing room instead of creating one. */
   joinCode?: string;
+  /** WebRTC adapter: auto (default), node-dc, werift */
+  adapter?: "auto" | "node-dc" | "werift";
+  /** Force WASM core (true), TS core (false), or auto (undefined) */
+  forceWasm?: boolean;
 }
 
 export async function runSend(args: SendArgs): Promise<void> {
@@ -67,7 +71,8 @@ export async function runSend(args: SendArgs): Promise<void> {
     sources.push(await fileSource(i + 1, abs));
   }
 
-  const pc = makeWeriftPeer();
+  const adapterMap = { "node-dc": "node-datachannel", werift: "werift", auto: "auto" } as const;
+  const pc = await makePeer({ adapter: adapterMap[args.adapter ?? "auto"] });
   const sender = new TransferSender(pc, {
     encryptionPassphrase: args.passphrase,
     onEvent: (e) => logEvent(e),
@@ -82,7 +87,7 @@ export async function runSend(args: SendArgs): Promise<void> {
   sig.close();
 }
 
-function logEvent(e: { type: string; [k: string]: unknown }): void {
+function logEvent(e: any): void {
   if (e.type === "progress") {
     const pct = (((e.totalBytesTransferred as number) / (e.totalBytes as number)) * 100).toFixed(1);
     const mbps = (((e.bytesPerSecond as number) * 8) / 1e6).toFixed(1);

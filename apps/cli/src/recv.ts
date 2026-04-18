@@ -1,14 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import {
-  SignalingClient,
-  TransferReceiver,
-  type DeviceInfo,
-} from "@dropbeam/transfer";
+import { SignalingClient, TransferReceiver } from "@dropbeam/transfer";
+import type { DeviceInfo } from "@dropbeam/protocol";
 import { WebSocket as NodeWS } from "ws";
 import { DirectorySinkFactory } from "./fsIo.js";
-import { makeWeriftPeer } from "./weriftAdapter.js";
+import { makePeer } from "./peerFactory.js";
 import { answer } from "./peerHandshake.js";
 
 export interface RecvArgs {
@@ -17,6 +14,10 @@ export interface RecvArgs {
   /** If unset, creates a new room and prints the code. */
   joinCode?: string;
   passphrase?: string;
+  /** WebRTC adapter: auto (default), node-dc, werift */
+  adapter?: "auto" | "node-dc" | "werift";
+  /** Force WASM core (true), TS core (false), or auto (undefined) */
+  forceWasm?: boolean;
 }
 
 export async function runRecv(args: RecvArgs): Promise<void> {
@@ -58,11 +59,12 @@ export async function runRecv(args: RecvArgs): Promise<void> {
     console.log(`[recv] sender joined: ${remotePeerId}`);
   }
 
-  const pc = makeWeriftPeer();
+  const adapterMap = { "node-dc": "node-datachannel", werift: "werift", auto: "auto" } as const;
+  const pc = await makePeer({ adapter: adapterMap[args.adapter ?? "auto"] });
   const receiver = new TransferReceiver(pc, {
     sinkFactory: new DirectorySinkFactory(outDir),
     encryptionPassphrase: args.passphrase,
-    onEvent: (e) => logEvent(e),
+    onEvent: (e) => logEvent(e as { type: string; [k: string]: unknown }),
   });
   receiver.attach();
   await answer(pc, sig, remotePeerId);

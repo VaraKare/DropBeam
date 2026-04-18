@@ -3,26 +3,17 @@
 Universal any-device-to-any-device file sharing. AirDrop / Quick Share /
 Snapdrop / WeTransfer rolled into one open protocol — browser-first,
 zero-account, end-to-end encrypted in transit (DTLS) with optional
-application-layer AES-GCM.
-
-> **Status — phase 1 (backend complete).** This repo ships the protocol,
-> signaling server, transfer engine, and a Node CLI that do real WebRTC
-> file transfer end-to-end. UI/native apps are deliberately out of scope
-> — see _Roadmap_.
+application-layer AES-GCM-256.
 
 ```
-       ┌────────────┐    JSON / WebSocket    ┌────────────┐
-       │ Sender     │◄──────────────────────►│ Signaling  │
-       │ (browser   │     (room + ICE relay) │ (Bun/WS)   │
-       │  or CLI)   │                        └────────────┘
-       └─────┬──────┘                              ▲
-             │                                     │
-             │           WebRTC DataChannels       │
-             │ ◄──────────────────────────────────►│
-             ▼          (DTLS, P2P or TURN)        ▼
-       ┌────────────┐                        ┌────────────┐
-       │ Receiver   │                        │ Receiver   │
-       └────────────┘                        └────────────┘
+Transport ladder (fastest → most compatible):
+
+  loopback          same host, in-memory
+  lan-quic          same LAN, Rust/QUIC binary (zero-RTT, TLS 1.3)
+  lan               same LAN, WebRTC DataChannels
+  wifi-direct       nearby, OS-native (MultipeerConnectivity / WifiP2p)
+  p2p-direct        cross-NAT, WebRTC
+  p2p-relayed       cross-NAT via TURN relay
 ```
 
 ---
@@ -31,290 +22,249 @@ application-layer AES-GCM.
 
 ```
 DropBeam/
-├── apps/
-│   ├── signaling/        Bun + WebSocket signaling server
-│   └── cli/              Node CLI (send/recv via werift WebRTC)
 ├── packages/
-│   ├── protocol/         Wire types: signaling msgs + binary frame format
-│   └── transfer/         Runtime-agnostic engine: sender, receiver,
-│                         chunker, AES-GCM, smart router, in-memory pair
-├── scripts/
-│   └── e2e.sh            End-to-end smoke test (real WebRTC)
-└── package.json          Bun workspace root
+│   ├── protocol/          — wire types (signaling + frame codec)
+│   ├── transfer/          — transfer engine (sender, receiver, QUIC transport, WASM core)
+│   └── transfer-core/     — Rust crate → WASM (sha256, AES-GCM, frame codec)
+├── apps/
+│   ├── signaling/         — Bun WebSocket signaling server
+│   ├── cli/               — Node/Bun CLI (dropbeam send / recv)
+│   ├── quic-relay/        — Rust/quinn QUIC binary (dropbeam-quic)
+│   ├── desktop/           — Tauri 2 desktop app (mDNS, tray, clipboard)
+│   ├── ios/               — Swift app (MultipeerConnectivity + WebRTC)
+│   └── android/           — Kotlin app (WifiP2p + WebRTC)
 ```
 
-| Package              | Responsibility                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------- |
-| `@dropbeam/protocol` | Signaling JSON messages, control messages, binary frame codec.                              |
-| `@dropbeam/transfer` | `TransferSender`, `TransferReceiver`, `decideRoute`, `SignalingClient`. Browser+Node safe.  |
-| `@dropbeam/signaling`| Stateless WS server. Rooms, codes, rate limiting, signal relay.                             |
-| `@dropbeam/cli`      | Headless sender/receiver, used for tests and real transfers between machines.               |
-
 ---
 
-## What works today
+## Quick start
 
-- ✅ Room creation with human-friendly codes (`K7-9P3-MX2A`)
-- ✅ Long room IDs for QR pairing
-- ✅ WebSocket signal relay with per-IP rate limiting
-- ✅ WebRTC offer/answer + ICE handshake (with STUN; TURN config-ready)
-- ✅ Multiple parallel datachannel "lanes" for throughput
-- ✅ Chunked transfer with positional writes (out-of-order safe)
-- ✅ Backpressure via `bufferedAmount` watermarks (memory-safe for huge files)
-- ✅ Resume from on-disk partial via per-file `.dbmeta.json` markers
-- ✅ Optional AES-GCM-256 application-layer encryption (PBKDF2 from passphrase)
-- ✅ SHA-256 file hash sent with each `file-end` (verify-on-finish hook)
-- ✅ Smart routing decision engine (`loopback`/`lan`/`wifi-direct`/`p2p-direct`/`p2p-relayed`)
-- ✅ 26 unit tests + real WebRTC e2e script (5 MiB random file, hash-checked)
+### Prerequisites
 
----
-
-## Prerequisites
-
-- **[Bun](https://bun.sh) ≥ 1.1** (`curl -fsSL https://bun.sh/install | bash`)
-- macOS / Linux / WSL — werift requires a working `dgram` for ICE.
+- **Bun** ≥ 1.0 — [bun.sh](https://bun.sh)
+- **Node.js** ≥ 20 (for `ws` / `werift` native deps)
+- **Rust** ≥ 1.78 + `wasm-pack` (for QUIC binary / WASM core, optional)
 
 ```bash
-git clone <your-fork-url> DropBeam
-cd DropBeam
+git clone https://github.com/you/DropBeam && cd DropBeam
 bun install
 ```
 
----
-
-## Run it
-
-### 1. Start the signaling server
+### 1 — Start the signaling server
 
 ```bash
 bun run dev:signaling
-# → [dropbeam-signaling] listening on ws://0.0.0.0:8787/ws
+# → listening on ws://0.0.0.0:8787/ws
 ```
 
-Env vars:
-
-| Var            | Default | Meaning                                  |
-| -------------- | ------- | ---------------------------------------- |
-| `PORT`         | 8787    | TCP port for HTTP + WS upgrades          |
-| `HOST`         | 0.0.0.0 | bind address                             |
-| `MAX_ROOMS`    | 10000   | hard cap on concurrent rooms             |
-| `ROOM_CAPACITY`| 8       | peers per room                           |
-| `MAX_MSG_BYTES`| 65536   | max WS payload                           |
-
-Health: `curl http://localhost:8787/healthz` → `{"ok":true,"rooms":0,"uptimeMs":...}`.
-
-### 2. Send & receive between two terminals
+### 2 — CLI file transfer (WebRTC path)
 
 ```bash
-# Terminal A — receiver creates a room and prints a join code
-bun run cli recv \
-  --signaling ws://localhost:8787/ws \
-  --out ./received
+# Terminal A — receiver creates a room and prints a code
+dropbeam recv --signaling ws://localhost:8787/ws --out ./received
 
-# →  code: TW-TFZ-HKDR
-# →  tell sender to use --join-code "TW-TFZ-HKDR"
+# Terminal B — sender joins using that code
+dropbeam send --signaling ws://localhost:8787/ws --join-code "K7-9P3-MX2A" ./photo.jpg ./video.mp4
 
-# Terminal B — sender joins that room
-bun run cli send \
-  --signaling ws://localhost:8787/ws \
-  --join-code "TW-TFZ-HKDR" \
-  ./big.zip ./photo.jpg
+# Or let sender create the room and wait for receiver
+dropbeam send --signaling ws://localhost:8787/ws ./file.zip
 ```
 
-Or invert the roles (sender creates room, receiver joins):
+### 3 — QUIC direct LAN transfer (fastest)
 
+Build the binary once:
 ```bash
-# Terminal A — sender creates and waits
-bun run cli send --signaling ws://localhost:8787/ws ./big.zip
-# →  code: 8B-RFM-XQ2P
-
-# Terminal B
-bun run cli recv --signaling ws://localhost:8787/ws --out ./received --join-code "8B-RFM-XQ2P"
+cd apps/quic-relay && cargo build --release
+# binary: apps/quic-relay/target/release/dropbeam-quic
 ```
 
-### 3. With application-layer encryption
-
+Then transfer:
 ```bash
-bun run cli send --signaling ... --passphrase "correct horse battery staple" ./secret.pdf
-bun run cli recv --signaling ... --passphrase "correct horse battery staple" --out ./received
+# Receiver machine
+dropbeam recv --quic --port 9898 --token my-secret --out ./received
+
+# Sender machine (same LAN)
+dropbeam send --quic --host 192.168.1.42 --port 9898 --token my-secret ./bigfile.iso
 ```
 
-The same passphrase must be shared out-of-band — the signaling server
-never sees it.
-
-### 4. Across the internet
-
-Replace `ws://localhost:8787/ws` with your deployed signaling URL
-(`wss://...`). For NAT traversal in restrictive networks you'll need a
-TURN server — wire its credentials into `makeWeriftPeer({ iceServers })`
-in `apps/cli/src/weriftAdapter.ts`, or pass through your browser app.
-
----
-
-## Test
+### 4 — Encrypted transfer (AES-GCM-256)
 
 ```bash
-bun test                      # all 26 unit tests
-bun run test:protocol         # frame codec
-bun run test:transfer         # engine via in-memory paired channels
-bun run test:signaling        # full WS integration test
-
-bun run e2e                   # real WebRTC round-trip with werift
-                              # generates 5 MiB random, verifies SHA-256
+dropbeam recv --signaling ws://... --out ./recv --passphrase "hunter2"
+dropbeam send --signaling ws://... ./secret.zip --passphrase "hunter2"
 ```
 
 ---
 
-## Embedding the engine in your own app
+## CLI reference
 
-The engine is runtime-agnostic. For a browser app:
-
-```ts
-import {
-  SignalingClient,
-  TransferSender,
-  TransferReceiver,
-} from "@dropbeam/transfer";
-
-// 1. connect signaling
-const sig = new SignalingClient({
-  url: "wss://signaling.example.com/ws",
-  device: { deviceId: crypto.randomUUID(), name: "My Mac", kind: "browser" },
-});
-const room = await sig.createRoom();
-console.log("share this code:", room.code);
-
-// 2. wait for peer
-const peerId = await new Promise<string>((res) => {
-  sig.on((m) => m.type === "peer-joined" && res(m.peerId));
-});
-
-// 3. set up native browser RTCPeerConnection (use the included
-//    runtime-agnostic peer interface; see apps/cli/src/weriftAdapter.ts
-//    for the Node analogue — a browser adapter is ~30 lines).
-const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-const adapter: import("@dropbeam/transfer").PeerConnection = wrapBrowserPC(pc);
-
-// 4. send files
-const sender = new TransferSender(adapter, {
-  onEvent: (e) => console.log(e),
-});
-sender.prepareChannels();
-await offer(adapter, sig, peerId);              // see apps/cli/src/peerHandshake.ts
-await sender.send("tx-1", [browserFileSource(file)]);
 ```
+dropbeam send  --signaling <url> [OPTIONS] <file>...
+dropbeam recv  --signaling <url> --out <dir> [OPTIONS]
 
-`browserFileSource` is a 10-line wrapper around `File.stream()`. The CLI
-has `apps/cli/src/fsIo.ts` for an analogous Node implementation.
+# QUIC (skips signaling)
+dropbeam send  --quic --host <ip> --port <n> --token <tok> [--lanes 4] <file>...
+dropbeam recv  --quic --port <n> --token <tok> --out <dir>
 
-### Hooks the host app provides
-
-| Interface         | What you implement                                                  |
-| ----------------- | ------------------------------------------------------------------- |
-| `PeerConnection`  | Adapter over your platform's WebRTC stack (browser / Node / native).|
-| `FileSource`      | Stream of `Uint8Array` chunks for one file you're sending.          |
-| `FileSinkFactory` | How to open per-file sinks; resume offset lookup.                   |
+OPTIONS
+  --signaling <url>     Signaling server (or DROPBEAM_SIGNALING env var)
+  --join-code <code>    Join existing room
+  --passphrase <str>    AES-GCM-256 passphrase
+  --ttl <sec>           Room TTL (default 1800)
+  --adapter <name>      WebRTC adapter: auto (default) | node-dc | werift
+  --wasm/--no-wasm      Force WASM or TS crypto core
+  --out <dir>           Output directory (recv)
+  --lanes <n>           Parallel QUIC streams (default 4)
+  --transfer-id <id>    Resume ID
+```
 
 ---
 
-## Architecture notes
-
-### Wire format
-
-**Control channel** (datachannel labelled `"control"`, ordered, JSON
-strings):
-
-```
-manifest → manifest-ack → [file-start, file-end]* → complete
-                           ↘ chunk-ack (optional)
-                           ↘ pause / resume / abort / chat
-```
-
-**Data channels** (`"data-0"` … `"data-N"`, ordered, binary).
-Each frame is:
-
-```
-[ magic=0xDB | ver=1 | flags | reserved | u32 fileId | u32 chunkIndex | u32 length ] payload
-   1B          1B      1B       1B          4B           4B               4B          length B
-```
-
-`flags` bit0 = encrypted (payload prefixed with 12-byte IV), bit1 = last
-chunk of file. See `packages/protocol/src/transfer.ts`.
-
-### Routing
-
-`decideRoute(networkProbe, modeHint)` returns a `RouteDecision` —
-transport, lane count, chunk size, whether to apply application-layer
-encryption. The probe is platform-supplied (browser fingerprint, ICE
-gathering result, mDNS sweep on native). See
-`packages/transfer/src/router.ts`.
-
-### Resume
-
-The receiver's `FileSink.begin(file, resumeOffset)` is called with the
-on-disk byte count. It echoes that offset back in `manifest-ack.resumeFrom`.
-The sender skips already-confirmed bytes and resumes from the chunk
-boundary at-or-before that offset. Each datachannel is ordered, so within
-a lane chunks always arrive in order; across lanes they may interleave,
-which is fine because writes are positional (`pwrite(2)` semantics).
-
-### Backpressure
-
-Each lane sets `bufferedAmountLowThreshold = 1 MiB`. When `bufferedAmount`
-exceeds 4 MiB, the sender awaits `onbufferedamountlow`. This caps memory
-regardless of file size — 100 GB transfers run in O(few MB) of RAM.
-
-### Security
-
-- **In transit**: WebRTC DTLS by default. Signaling server never sees file
-  bytes; ICE candidates and SDP only.
-- **Optional app-layer**: AES-GCM-256, key derived via PBKDF2-SHA256
-  (200k iterations) from passphrase + 16-byte salt. Salt travels in the
-  manifest; passphrase never does. Use this for transfers via untrusted TURN.
-- **Anti-spam**: per-IP token-bucket on messages (30 burst / 15/s refill)
-  and on room creates (5 burst / 1 per 10s).
-- **No persistence**: rooms live in memory; default TTL 30 min, max 4 h.
-
----
-
-## Roadmap
-
-| Phase   | Scope                                                          | Status |
-| ------- | -------------------------------------------------------------- | ------ |
-| **1**   | Protocol + signaling + engine + CLI + tests                    | ✅ done |
-| **2**   | Web UI (Next.js), tab-based modes, drag-drop, QR pair, history | 🔜 user-owned |
-| **3**   | Native apps (iOS/Android/macOS/Windows), nearby (mDNS, BT, WiFi Direct), TURN cluster | 🚧 |
-| **3.5** | Chat during transfer, multicast LAN, multi-receiver fan-out, transfer scheduler | 💡 |
-
-The transfer engine already supports pause/resume/chat in the protocol —
-those messages are defined and the receiver dispatches paused/resumed
-events; the UI just needs to call them.
-
----
-
-## Contributing & forking
+## Run tests
 
 ```bash
-gh repo fork <upstream>     # or your VCS equivalent
-cd DropBeam
-bun install
-bun test                    # green = good baseline
-bun run e2e                 # real WebRTC round-trip
+bun test                          # all unit + integration tests (26 tests)
+bun run e2e                       # end-to-end: signaling + full transfer round-trip
 ```
 
-**Conventions**
+Individual package tests:
+```bash
+bun test packages/transfer        # transfer engine (sender/receiver/router)
+bun test apps/signaling           # signaling server (room codes, rate limiting, WS)
+```
 
-- TypeScript strict; no `any` outside the platform-adapter boundary.
-- The transfer engine never imports `werift`, browser globals, or
-  `node:*` modules directly — only via the abstractions in
-  `packages/transfer/src/types.ts` and `peer.ts`. New platforms = new
-  adapter, no engine changes.
-- Tests live next to the code they exercise (`*/test/*.test.ts`).
-- Wire-protocol changes bump `PROTOCOL_VERSION` in
-  `packages/protocol/src/index.ts`.
+---
+
+## Build native components (optional)
+
+### WASM crypto core
+
+```bash
+cd packages/transfer-core
+wasm-pack build --target bundler --out-dir pkg
+```
+
+The WASM module is imported automatically by `@dropbeam/transfer` with a
+pure-TypeScript fallback if the build is absent.
+
+### QUIC binary
+
+```bash
+cd apps/quic-relay
+cargo build --release
+# → target/release/dropbeam-quic
+# Place on PATH or next to the dropbeam CLI binary
+```
+
+### Tauri desktop app
+
+```bash
+cd apps/desktop
+npm install
+npx tauri build          # production bundle
+npx tauri dev            # dev mode
+```
+
+Requires Tauri 2 prerequisites: [tauri.app/v2/guides/prerequisites](https://tauri.app/v2/guides/prerequisites)
+
+---
+
+## iOS app
+
+`apps/ios/DropBeam/` — Swift 5.9, iOS 15+
+
+```bash
+cd apps/ios/DropBeam
+pod install              # installs GoogleWebRTC
+open DropBeam.xcworkspace
+```
+
+Key classes:
+- `NearbyTransfer` — MultipeerConnectivity (same-LAN, AirDrop-style)
+- `WebRTCFallback` — GoogleWebRTC DataChannels (remote/cross-NAT)
+- `SignalingClient` — WebSocket room/SDP relay
+- `FileTransfer` — coordinator (picks transport, routes events)
+
+---
+
+## Android app
+
+`apps/android/` — Kotlin, minSdk 26, Gradle 8
+
+```bash
+cd apps/android
+./gradlew assembleDebug
+```
+
+Dependencies: `stream-webrtc-android`, `okhttp3`, `kotlinx-coroutines`.
+
+Key classes:
+- `NearbyTransfer` — WifiP2pManager (WiFi Direct), raw TCP socket transfer
+- `WebRTCFallback` — WebRTC DataChannels via stream-webrtc-android
+- `SignalingClient` — OkHttp WebSocket + Kotlin Flow events
+- `FileTransfer` — coordinator
+
+Required manifest permissions: `NEARBY_WIFI_DEVICES`, `CHANGE_WIFI_STATE`, `INTERNET`.
+
+---
+
+## Architecture
+
+### Frame format (binary, 16-byte header)
+
+```
+ 0        1        2        3
+ magic    ver      flags    reserved
+ 0xDB     0x01     0bxxxxxx 0x00
+
+ 4 ─── 7  : uint32 BE  fileId
+ 8 ─── 11 : uint32 BE  chunkIndex
+ 12 ── 15 : uint32 BE  payloadLen
+ 16+      : payload (optionally AES-GCM encrypted)
+
+flags:
+  bit 0 = ENCRYPTED
+  bit 1 = LAST (final chunk of file)
+```
+
+### Smart router
+
+```
+sameHost?     → loopback
+sameLan+quic? → lan-quic   (Rust/quinn, UDP, TLS 1.3, zero-RTT)
+sameLan?      → lan        (WebRTC DataChannels)
+nearby?       → wifi-direct (OS-native: MPC / WifiP2p)
+directReach?  → p2p-direct  (WebRTC, STUN hole-punch)
+else          → p2p-relayed (WebRTC + TURN)
+```
+
+### WebRTC adapter fallback chain
+
+```
+node-datachannel (C++, libdatachannel)  ← fastest, requires native binary
+   ↓ if unavailable
+werift (pure TypeScript)                ← zero native deps, works everywhere
+```
+
+### Crypto core fallback chain
+
+```
+WASM (Rust: sha2 + aes-gcm crates)  ← hot path, ~10× faster
+   ↓ if WASM not bundled
+TypeScript (WebCrypto API)           ← universal fallback
+```
+
+---
+
+## Fork / extend
+
+1. **Add a new transport**: implement `PeerConnection` interface in `packages/transfer/src/peer.ts`
+2. **Add a new signaling backend**: implement the wire types in `packages/protocol/src/signaling.ts`
+3. **Plug in TURN**: edit `iceServers` in `weriftAdapter.ts` / `nodeDCAdapter.ts` / iOS `WebRTCFallback.swift` / Android `WebRTCFallback.kt`
+4. **Custom frame format**: extend `packages/transfer-core/src/frame.rs` + `packages/protocol/src/transfer.ts`
 
 ---
 
 ## License
 
-MIT (or your choice).
+MIT

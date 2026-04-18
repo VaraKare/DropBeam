@@ -1,0 +1,40 @@
+{
+  "productName": "DropBeam",
+  "version": "0.1.0",
+  "identifier": "com.dropbeam.app",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "DropBeam",
+        "width": 900,
+        "height": 620,
+        "minWidth": 600,
+        "minHeight": 480,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false,
+      "tooltip": "DropBeam — send & receive files"
+    },
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost wss:; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline'"
+    }
+  },
+  "plugins": {
+    "shell": { "open": true },
+    "dialog": {},
+    "fs": { "all": true, "scope": ["$DOCUMENT", "$DOWNLOAD", "$HOME"] },
+    "notification": {}
+  }
+}

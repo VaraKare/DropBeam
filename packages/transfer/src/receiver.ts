@@ -82,7 +82,11 @@ export class TransferReceiver {
         if (typeof data === "string") this.enqueueControl(data);
       };
       ch.onclose = () => {
-        if (!this.allDone()) this.fail(new Error("control channel closed"));
+        // Drain the serial queue first — the 'complete' control message may
+        // already be queued but not yet processed when the channel fires onclose.
+        this.controlQueue.then(() => {
+          if (!this.allDone()) this.fail(new Error("control channel closed"));
+        });
       };
     } else if (ch.label.startsWith("data-")) {
       this.lanes.push(ch);
