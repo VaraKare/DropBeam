@@ -1,0 +1,30 @@
+{
+  "name": "dropbeam",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Universal any-device-to-any-device file sharing platform.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:signaling": "bun --cwd apps/signaling run dev",
+    "start:signaling": "bun --cwd apps/signaling run start",
+    "cli": "bun apps/cli/src/index.ts",
+    "test": "bun test",
+    "test:protocol": "bun test packages/protocol",
+    "test:transfer": "bun test packages/transfer",
+    "test:signaling": "bun test apps/signaling",
+    "e2e": "bash scripts/e2e.sh",
+    "typecheck": "bun --cwd packages/protocol run typecheck && bun --cwd packages/transfer run typecheck && bun --cwd apps/signaling run typecheck && bun --cwd apps/cli run typecheck"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

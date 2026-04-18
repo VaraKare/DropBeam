@@ -1,0 +1,24 @@
+{
+  "name": "@dropbeam/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "dropbeam": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "send": "bun src/index.ts send",
+    "recv": "bun src/index.ts recv",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dropbeam/protocol": "workspace:*",
+    "@dropbeam/transfer": "workspace:*",
+    "werift": "^0.20.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
+  }
+}

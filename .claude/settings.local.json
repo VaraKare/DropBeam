@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(export PATH=\"$HOME/.bun/bin:$PATH\")",
+      "Bash(bun --version)",
+      "Bash(bun install *)",
+      "Bash(bun test *)",
+      "Bash(bun --cwd /Users/karevaraprasad/DropBeam/apps/cli run typecheck)",
+      "Bash(bash scripts/e2e.sh)"
+    ]
+  }
+}

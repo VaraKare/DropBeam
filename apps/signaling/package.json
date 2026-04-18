@@ -1,0 +1,15 @@
+{
+  "name": "@dropbeam/signaling",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot src/server.ts",
+    "start": "bun src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dropbeam/protocol": "workspace:*"
+  }
+}
