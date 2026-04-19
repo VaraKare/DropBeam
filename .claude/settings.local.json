@@ -21,7 +21,12 @@
       "Read(//Users/karevaraprasad/.bun/bin/**)",
       "Bash(/Users/karevaraprasad/.bun/bin/bun run *)",
       "Bash(bun --cwd packages/transfer run typecheck)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(../../node_modules/.bin/tsc --noEmit)",
+      "Bash(../../node_modules/.bin/tsc --noEmit --project ./tsconfig.json)",
+      "Bash(../../node_modules/.bin/tsc --noEmit --traceResolution)",
+      "Bash(ln -s ../../../../packages/protocol /Users/karevaraprasad/DropBeam/apps/web/node_modules/@dropbeam/protocol)",
+      "Bash(ln -s ../../../../packages/transfer /Users/karevaraprasad/DropBeam/apps/web/node_modules/@dropbeam/transfer)"
     ]
   }
 }

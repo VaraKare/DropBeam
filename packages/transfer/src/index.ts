@@ -10,3 +10,5 @@ export * from "./signalingClient.js";
 export * from "./inMemoryPair.js";
 export * from "./wasmCore.js";
 export * from "./quicTransport.js";
+export * from "./worker/index.js";
+export * from "./sinks/index.js";

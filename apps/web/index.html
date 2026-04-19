@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0d12" />
+    <title>DropBeam — fast, private file transfer</title>
+    <link rel="preconnect" href="https://rsms.me/" />
+    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div class="bg-glow" aria-hidden="true"></div>
+
+    <main id="app">
+      <header class="hero">
+        <a class="brand" href="/">
+          <svg class="brand-mark" width="28" height="28" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="bg" x1="0" y1="0" x2="32" y2="32">
+                <stop offset="0" stop-color="#5b8cff" />
+                <stop offset="1" stop-color="#a877ff" />
+              </linearGradient>
+            </defs>
+            <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#bg)" />
+            <path d="M9 9h6a7 7 0 0 1 0 14H9V9Zm4 3v8h2a4 4 0 0 0 0-8h-2Zm9 9 3-3m0 3-3-3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+          <span class="brand-name">DropBeam</span>
+        </a>
+        <p class="tagline">Direct, peer-to-peer file transfer. End-to-end encrypted in transit. No accounts, no servers hold your files.</p>
+      </header>
+
+      <nav class="roles" role="tablist">
+        <button id="role-send" class="role active" role="tab" aria-selected="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v12m0-12-5 5m5-5 5 5M4 20h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Send
+        </button>
+        <button id="role-recv" class="role" role="tab" aria-selected="false">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 20V8m0 12-5-5m5 5 5-5M4 4h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Receive
+        </button>
+      </nav>
+
+      <section id="view-send" class="view card">
+        <label id="dropzone" class="dropzone" for="send-files">
+          <input type="file" id="send-files" multiple hidden />
+          <svg class="dropzone-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3v12m0-12-4 4m4-4 4 4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="dropzone-primary">Drop files here or click to choose</div>
+          <div class="dropzone-hint">Any size. Any type. Streams directly to the other device.</div>
+        </label>
+        <ul id="send-filelist" class="filelist"></ul>
+
+        <div class="action-row">
+          <button id="send-start" class="primary" disabled>
+            Create share code
+          </button>
+          <div id="send-code" class="code-display hidden">
+            <span class="code-label">Share this code</span>
+            <span id="send-code-value" class="code-value"></span>
+          </div>
+        </div>
+
+        <div id="send-status" class="status" aria-live="polite"></div>
+        <div id="send-progress-wrap" class="progress-wrap hidden">
+          <progress id="send-progress" value="0" max="1"></progress>
+          <div id="send-stats" class="stats"></div>
+        </div>
+      </section>
+
+      <section id="view-recv" class="view card hidden">
+        <div class="field">
+          <label for="recv-code">Share code</label>
+          <input type="text" id="recv-code" placeholder="e.g. 428193" inputmode="numeric" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label>Save location</label>
+          <div class="folder-row">
+            <button id="recv-pickdir" class="secondary">Choose folder…</button>
+            <span id="recv-dirname" class="folder-name muted">No folder selected</span>
+          </div>
+        </div>
+        <div class="action-row">
+          <button id="recv-start" class="primary" disabled>Join and receive</button>
+        </div>
+
+        <div id="recv-status" class="status" aria-live="polite"></div>
+        <div id="recv-progress-wrap" class="progress-wrap hidden">
+          <progress id="recv-progress" value="0" max="1"></progress>
+          <div id="recv-stats" class="stats"></div>
+        </div>
+      </section>
+
+      <footer class="foot">
+        <span>Signaling: <code id="sig-url">ws://localhost:8787/ws</code></span>
+        <span class="dot">·</span>
+        <span>Best in Chrome or Edge (File System Access API)</span>
+      </footer>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

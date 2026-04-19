@@ -7,7 +7,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./signaling-client": "./src/signalingClient.ts",
-    "./router": "./src/router.ts"
+    "./router": "./src/router.ts",
+    "./worker": "./src/worker/index.ts",
+    "./worker/transferWorker": "./src/worker/transferWorker.ts",
+    "./sinks": "./src/sinks/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
