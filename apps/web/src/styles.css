@@ -942,28 +942,39 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ─── info (i) buttons + popover ────────────────────────────────────────── */
 
+/* Inline next to text labels. Sized in em so it scales with the surrounding
+ * text. We hide the raw "i" character (font-size: 0) and render it via
+ * ::before so we can control glyph + position independently — a literal text
+ * "i" never optically centers inside a circle because of letter sidebearings. */
 .info-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   margin-left: 6px;
   padding: 0;
   background: var(--panel-hi);
   border: 1px solid var(--border-hi);
   border-radius: 50%;
   color: var(--muted);
-  font: inherit;
-  font-size: 10px;
-  font-weight: 700;
-  font-style: italic;
-  font-family: Georgia, "Times New Roman", serif;
-  line-height: 1;
+  font: 0/0 a;            /* hides the raw "i" text node */
   cursor: pointer;
-  vertical-align: middle;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  vertical-align: 1px;    /* optical alignment with the cap height */
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.05s;
   flex-shrink: 0;
+  user-select: none;
+}
+.info-btn::before {
+  content: "i";
+  font-family: ui-serif, "Times New Roman", Georgia, serif;
+  font-style: italic;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: currentColor;
+  position: relative;
+  top: -0.5px;
 }
 .info-btn:hover, .info-btn:focus-visible {
   background: var(--accent-soft);
@@ -971,13 +982,15 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   border-color: var(--accent);
   outline: none;
 }
+.info-btn:active { transform: scale(0.92); }
+
 .info-btn-light {
-  background: rgba(255,255,255,0.08);
-  border-color: rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.20);
   color: inherit;
 }
 .info-btn-light:hover {
-  background: rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.18);
   color: inherit;
 }
 
@@ -1123,8 +1136,15 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   .legal-body { padding: 20px 18px 24px; }
 }
 
-/* ─── reverted heading style for popover-spawned info buttons inside light pills ─── */
-.pill .info-btn { margin-left: 4px; width: 16px; height: 16px; font-size: 9px; }
+/* Slightly tighter inside pill bubbles. */
+.pill .info-btn { margin-left: 4px; width: 14px; height: 14px; vertical-align: 0; }
+.pill .info-btn::before { font-size: 10px; }
+
+/* Label rows like "Save downloads to" use uppercase 12px text. Bump the
+ * vertical-align so the icon sits centered with the cap height. */
+.field label .info-btn { vertical-align: -1px; }
+.passphrase-details summary .info-btn { vertical-align: -1px; }
+.mode-title .info-btn { vertical-align: 1px; }
 
 /* ─── selection ─────────────────────────────────────────────────────────── */
 
