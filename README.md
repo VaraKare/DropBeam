@@ -5,16 +5,41 @@ Snapdrop / WeTransfer rolled into one open protocol — browser-first,
 zero-account, end-to-end encrypted in transit (DTLS) with optional
 application-layer AES-GCM-256.
 
+**Phone → Laptop. Mac → Windows. Android → iPad. Any direction.** Files
+stream peer-to-peer in your browser. No upload server holds them, no
+size limit, no account. Works *without* internet when both devices are
+on the same Wi-Fi.
+
 ```
 Transport ladder (fastest → most compatible):
 
   loopback          same host, in-memory
   lan-quic          same LAN, Rust/QUIC binary (zero-RTT, TLS 1.3)
-  lan               same LAN, WebRTC DataChannels
+  lan               same LAN, WebRTC DataChannels (host candidates)
   wifi-direct       nearby, OS-native (MultipeerConnectivity / WifiP2p)
-  p2p-direct        cross-NAT, WebRTC
+  p2p-direct        cross-NAT, WebRTC (STUN hole-punch)
   p2p-relayed       cross-NAT via TURN relay
 ```
+
+## What's in the web app
+
+The `apps/web/` PWA is the universal frontend — any browser, any device.
+
+- **Two-mode picker**: *Same Wi-Fi* (no internet, host-candidate WebRTC) or
+  *Anywhere* (STUN/TURN over the internet). Auto-detected from the host
+  the page is served from.
+- **QR + short code**: senders get both a typeable share code and a QR
+  encoding a deep-link URL. Receivers either type the code or scan with
+  their camera (Chrome on Android uses the native `BarcodeDetector` API).
+- **Deep-link auto-join**: `/?c=K7-9P3-MX2A` auto-fills the code and
+  jumps straight to the receive flow.
+- **Live transport badge**: shows whether the chosen WebRTC path ended up
+  as `LAN-direct · no internet`, `P2P-direct · encrypted`, or `TURN relayed`.
+- **Streaming to disk**: receivers pick a save folder (`showDirectoryPicker`
+  in Chrome/Edge) — files stream straight to disk, never held in memory.
+- **PWA installable**: works offline (app shell cached) once visited once.
+- **Drag, paste, click, share**: clipboard paste, drag-and-drop, native
+  Web Share, copy code, copy link.
 
 ---
 
@@ -27,12 +52,13 @@ DropBeam/
 │   ├── transfer/          — transfer engine (sender, receiver, QUIC transport, WASM core)
 │   └── transfer-core/     — Rust crate → WASM (sha256, AES-GCM, frame codec)
 ├── apps/
-│   ├── signaling/         — Bun WebSocket signaling server
+│   ├── web/               — Vite/TS PWA, the universal frontend
+│   ├── signaling/         — Bun WebSocket signaling server (also serves the web bundle when WEB_ROOT is set)
 │   ├── cli/               — Node/Bun CLI (dropbeam send / recv)
 │   ├── quic-relay/        — Rust/quinn QUIC binary (dropbeam-quic)
 │   ├── desktop/           — Tauri 2 desktop app (mDNS, tray, clipboard)
-│   ├── ios/               — Swift app (MultipeerConnectivity + WebRTC)
-│   └── android/           — Kotlin app (WifiP2p + WebRTC)
+│   ├── ios/               — Swift app (MultipeerConnectivity + WebRTC) — stub
+│   └── android/           — Kotlin app (WifiP2p + WebRTC) — stub
 ```
 
 ---
@@ -50,12 +76,34 @@ git clone https://github.com/you/DropBeam && cd DropBeam
 bun install
 ```
 
-### 1 — Start the signaling server
+### 1 — Web app (the primary UX)
+
+In one terminal:
+```bash
+bun run dev:signaling      # ws://0.0.0.0:8787/ws
+```
+In another:
+```bash
+bun run dev:web            # http://localhost:5173
+```
+Open the URL on both devices (same machine for a quick test). Click
+**Send**, drop a file, share the code or QR. On the other device click
+**Receive** and either type the code or scan the QR.
+
+### 1b — One-port LAN deploy (no internet anywhere)
+
+For the "two phones on a hotel Wi-Fi with no uplink" case, host the
+built web app from the signaling process itself so you only need one URL:
 
 ```bash
-bun run dev:signaling
-# → listening on ws://0.0.0.0:8787/ws
+bun run lan
+# → builds apps/web → dist, then starts signaling on :8787
+# → web app served at  http://<your-lan-ip>:8787/
+# → signaling WS at    ws://<your-lan-ip>:8787/ws
 ```
+
+The web app auto-detects that it's on a private IP and switches to LAN
+mode (no STUN servers, host-only ICE candidates).
 
 ### 2 — CLI file transfer (WebRTC path)
 
@@ -265,6 +313,27 @@ TypeScript (WebCrypto API)           ← universal fallback
 
 ---
 
+## Privacy
+
+DropBeam **cannot see your files**. They go peer-to-peer over a
+DTLS-encrypted WebRTC data channel; the signaling server only relays
+opaque SDP/ICE handshake blobs to introduce the two devices. No
+upload bucket, no cache, no analytics. Add the optional passphrase
+and every chunk is also AES-GCM-256 encrypted in your browser before
+it leaves the device.
+
+The user-facing privacy statement is in-app — open the web UI and
+click "Privacy" in the footer.
+
+## More docs
+
+- **[FEATURES.md](./FEATURES.md)** — comprehensive feature catalog
+  (use this as the source-of-truth for building marketing pages, app
+  listings, or mobile screens).
+- **[FORK.md](./FORK.md)** — how to fork, customize, self-host, and
+  contribute back.
+
 ## License
 
-MIT
+MIT — see header in each source file. Use it, fork it, rebrand it,
+ship it commercially. Just don't sue us if a file gets corrupted.

@@ -20,7 +20,7 @@
 
 import { runSend } from "./send.js";
 import { runRecv } from "./recv.js";
-import { quicSend, quicRecv } from "@dropbeam/transfer";
+import { quicSend, quicRecv } from "@dropbeam/transfer/quic";
 
 interface ParsedArgs {
   cmd: "send" | "recv" | "help";

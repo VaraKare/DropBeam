@@ -1,6 +1,8 @@
 node_modules/
 dist/
 build/
+target/
+packages/transfer-core/pkg/
 .next/
 out/
 coverage/

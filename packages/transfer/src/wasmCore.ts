@@ -50,8 +50,12 @@ export interface IncrementalHasher {
 // ─── WASM implementation ──────────────────────────────────────────────────
 
 async function loadWasm(): Promise<TransferCore> {
-  // Dynamic import so the bundle doesn't break if WASM isn't present.
-  const wasm = await import("../../transfer-core/pkg/dropbeam_transfer_core.js" as string);
+  // Path is assembled at runtime so the bundler can't statically resolve it.
+  // If `wasm-pack build` has been run, this load succeeds; otherwise it throws
+  // and loadCore() falls through to the pure-TS core.
+  const segments = ["..", "..", "transfer-core", "pkg", "dropbeam_transfer_core.js"];
+  const path = segments.join("/");
+  const wasm = await import(/* @vite-ignore */ path);
   await (wasm as { default?: () => Promise<void> }).default?.();
 
   return {

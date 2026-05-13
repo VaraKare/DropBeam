@@ -2,103 +2,383 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0b0d12" />
-    <title>DropBeam — fast, private file transfer</title>
-    <link rel="preconnect" href="https://rsms.me/" />
+    <meta name="theme-color" content="#0a0b10" />
+    <meta name="description" content="DropBeam — fast, private, peer-to-peer file transfer between any devices. Works on your Wi-Fi without internet." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon-180.svg" />
+    <title>DropBeam · any device, any size, no cloud</title>
+    <link rel="preconnect" href="https://rsms.me/" crossorigin />
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
-    <div class="bg-glow" aria-hidden="true"></div>
+    <div class="aurora" aria-hidden="true">
+      <div class="aurora-blob blob-1"></div>
+      <div class="aurora-blob blob-2"></div>
+      <div class="aurora-blob blob-3"></div>
+    </div>
 
-    <main id="app">
-      <header class="hero">
-        <a class="brand" href="/">
-          <svg class="brand-mark" width="28" height="28" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <header class="top">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="28" height="28" fill="none">
             <defs>
-              <linearGradient id="bg" x1="0" y1="0" x2="32" y2="32">
+              <linearGradient id="g" x1="0" y1="0" x2="32" y2="32">
                 <stop offset="0" stop-color="#5b8cff" />
-                <stop offset="1" stop-color="#a877ff" />
+                <stop offset="1" stop-color="#c46bff" />
               </linearGradient>
             </defs>
-            <rect x="1" y="1" width="30" height="30" rx="8" fill="url(#bg)" />
-            <path d="M9 9h6a7 7 0 0 1 0 14H9V9Zm4 3v8h2a4 4 0 0 0 0-8h-2Zm9 9 3-3m0 3-3-3" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#g)" />
+            <path d="M10 9h5.5a7 7 0 0 1 0 14H10V9Zm3.5 3v8h2a4 4 0 0 0 0-8h-2Z" fill="#fff"/>
+            <path d="M21.5 13.5 24 11l2.5 2.5M24 11v6.5" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
           </svg>
-          <span class="brand-name">DropBeam</span>
-        </a>
-        <p class="tagline">Direct, peer-to-peer file transfer. End-to-end encrypted in transit. No accounts, no servers hold your files.</p>
-      </header>
-
-      <nav class="roles" role="tablist">
-        <button id="role-send" class="role active" role="tab" aria-selected="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v12m0-12-5 5m5-5 5 5M4 20h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Send
-        </button>
-        <button id="role-recv" class="role" role="tab" aria-selected="false">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 20V8m0 12-5-5m5 5 5-5M4 4h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Receive
-        </button>
-      </nav>
-
-      <section id="view-send" class="view card">
-        <label id="dropzone" class="dropzone" for="send-files">
-          <input type="file" id="send-files" multiple hidden />
-          <svg class="dropzone-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M12 3v12m0-12-4 4m4-4 4 4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </span>
+        <span class="brand-name">DropBeam</span>
+      </a>
+      <div class="top-right">
+        <span id="conn-pill" class="pill pill-muted" title="Detected connection mode">
+          <span class="pill-dot"></span>
+          <span id="conn-pill-label">Detecting…</span>
+        </span>
+        <button id="install-btn" class="ghost-btn hidden" type="button" title="Install as an app">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 4v12m0 0-4-4m4 4 4-4M4 20h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
-          <div class="dropzone-primary">Drop files here or click to choose</div>
-          <div class="dropzone-hint">Any size. Any type. Streams directly to the other device.</div>
-        </label>
-        <ul id="send-filelist" class="filelist"></ul>
+          Install
+        </button>
+      </div>
+    </header>
 
-        <div class="action-row">
-          <button id="send-start" class="primary" disabled>
-            Create share code
-          </button>
-          <div id="send-code" class="code-display hidden">
-            <span class="code-label">Share this code</span>
-            <span id="send-code-value" class="code-value"></span>
-          </div>
+    <main id="app">
+      <!-- ─── STAGE: idle (pick a side) ─── -->
+      <section data-stage="idle" class="stage active">
+        <div class="hero">
+          <h1 class="title">
+            Send <em>anything</em> to <em>any</em> device.
+          </h1>
+          <p class="lede">
+            Phone → laptop. Mac → Windows. Android → iPad. Files stream
+            <strong>peer-to-peer</strong>, end-to-end encrypted.
+            <span class="lede-em">No accounts. No upload servers. No size limit.</span>
+          </p>
         </div>
 
-        <div id="send-status" class="status" aria-live="polite"></div>
-        <div id="send-progress-wrap" class="progress-wrap hidden">
-          <progress id="send-progress" value="0" max="1"></progress>
-          <div id="send-stats" class="stats"></div>
+        <div class="mode-toggle" role="tablist" aria-label="Connection mode">
+          <button id="mode-lan" class="mode" role="tab" aria-selected="false">
+            <span class="mode-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M5 12.5a10 10 0 0 1 14 0M8 15.5a6 6 0 0 1 8 0M11 18.5h2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span class="mode-text">
+              <span class="mode-title">Same Wi-Fi <button class="info-btn" type="button" data-info="lan" aria-label="What is Same Wi-Fi mode?">i</button></span>
+              <span class="mode-sub">Works without internet</span>
+            </span>
+          </button>
+          <button id="mode-net" class="mode" role="tab" aria-selected="false">
+            <span class="mode-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" stroke="currentColor" stroke-width="2"/>
+              </svg>
+            </span>
+            <span class="mode-text">
+              <span class="mode-title">Anywhere <button class="info-btn" type="button" data-info="net" aria-label="What is Anywhere mode?">i</button></span>
+              <span class="mode-sub">Across the internet</span>
+            </span>
+          </button>
+        </div>
+
+        <div class="role-cards">
+          <button id="go-send" class="role-card" type="button">
+            <span class="role-card-glyph send">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M12 3v14m0-14-5 5m5-5 5 5M4 20h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="role-card-text">
+              <span class="role-card-title">Send a file</span>
+              <span class="role-card-sub">You'll get a short code &amp; QR</span>
+            </span>
+            <svg class="role-card-chev" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+
+          <button id="go-recv" class="role-card" type="button">
+            <span class="role-card-glyph recv">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M12 21V7m0 14-5-5m5 5 5-5M4 4h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span class="role-card-text">
+              <span class="role-card-title">Receive a file</span>
+              <span class="role-card-sub">Type the code or scan a QR</span>
+            </span>
+            <svg class="role-card-chev" width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+
+        <ul class="feature-row" aria-label="What makes DropBeam different">
+          <li>
+            <span class="feat-ico">⚡</span>
+            <div><b>Direct, peer-to-peer.</b> No upload server holds your files. We just introduce the two devices.</div>
+          </li>
+          <li>
+            <span class="feat-ico">🔒</span>
+            <div><b>Encrypted in transit.</b> DTLS by default. Add a passphrase for AES-GCM-256 on top.</div>
+          </li>
+          <li>
+            <span class="feat-ico">∞</span>
+            <div><b>Any size.</b> Streams from disk, never loaded into memory. 50 GB in your browser — fine.</div>
+          </li>
+          <li>
+            <span class="feat-ico">📡</span>
+            <div><b>Same Wi-Fi works offline.</b> Two devices on one router don't need an internet connection.</div>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ─── STAGE: send (pick files) ─── -->
+      <section data-stage="send-pick" class="stage">
+        <div class="stage-head">
+          <button class="back-btn" data-back type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Back
+          </button>
+          <h2 class="stage-title">Choose what to send</h2>
+        </div>
+
+        <!-- File input is a sibling, NOT a parent of, the dropzone. On iOS Safari
+             a label-wrapping pattern can unload the page when the file picker
+             returns; a programmatic input.click() from a real <button> avoids this. -->
+        <input type="file" id="send-files" multiple hidden />
+        <button id="dropzone" class="dropzone" type="button">
+          <div class="dropzone-ring"><div class="dropzone-ring-inner"></div></div>
+          <div class="dropzone-icon">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none">
+              <path d="M12 3v12m0-12-4 4m4-4 4 4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="dropzone-primary"><span class="desktop-only">Drop files here, paste, or </span><span class="mobile-only">Tap to </span><span class="desktop-only">click to </span>choose</div>
+          <div class="dropzone-hint">Any number. Any size. Streams directly to the other device.</div>
+        </button>
+
+        <ul id="send-filelist" class="filelist"></ul>
+        <div id="send-totals" class="totals hidden"></div>
+
+        <div class="passphrase-row">
+          <details class="passphrase-details">
+            <summary>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 1a5 5 0 0 0-5 5v3H6a3 3 0 0 0-3 3v9a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-9a3 3 0 0 0-3-3h-1V6a5 5 0 0 0-5-5Zm-3 5a3 3 0 1 1 6 0v3H9V6Z" fill="currentColor"/></svg>
+              Optional: encrypt with a passphrase (AES-GCM-256)
+              <button class="info-btn" type="button" data-info="passphrase" aria-label="What does the passphrase do?">i</button>
+            </summary>
+            <input id="send-pass" type="password" placeholder="Shared passphrase the receiver will know" autocomplete="off" />
+          </details>
+        </div>
+
+        <div class="action-row right">
+          <button id="send-create" class="primary big" type="button" disabled>
+            Create share code
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
       </section>
 
-      <section id="view-recv" class="view card hidden">
+      <!-- ─── STAGE: send-share (waiting for receiver) ─── -->
+      <section data-stage="send-share" class="stage">
+        <div class="stage-head">
+          <button class="back-btn" data-back type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Cancel
+          </button>
+          <h2 class="stage-title">Waiting for the other device…</h2>
+        </div>
+
+        <div class="share-grid">
+          <div class="share-code-block">
+            <div class="muted-label">Share this code</div>
+            <div id="share-code" class="share-code">—</div>
+            <div class="share-actions">
+              <button id="copy-code" class="chip-btn" type="button" title="Copy code">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 9V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-4M5 9h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Copy code
+              </button>
+              <button id="copy-link" class="chip-btn" type="button" title="Copy direct link">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1m1 9a5 5 0 0 1-7 0 5 5 0 0 1 0-7l3-3a5 5 0 0 1 7 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Copy link
+              </button>
+              <button id="share-native" class="chip-btn hidden" type="button" title="Share via your device">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7M16 6l-4-4-4 4M12 2v14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Share…
+              </button>
+            </div>
+            <p class="muted small">
+              Tell them the code, or have them scan the QR on the right.
+            </p>
+          </div>
+
+          <div class="qr-block">
+            <div class="muted-label">Or scan with a camera</div>
+            <div id="qr-display" class="qr-display" aria-label="QR code with join link"></div>
+            <div id="qr-url" class="qr-url muted small"></div>
+          </div>
+        </div>
+
+        <div class="waiting">
+          <div class="wave"><span></span><span></span><span></span><span></span><span></span></div>
+          <span id="waiting-text">Waiting for someone to join with that code…</span>
+        </div>
+      </section>
+
+      <!-- ─── STAGE: recv (code entry) ─── -->
+      <section data-stage="recv-pick" class="stage">
+        <div class="stage-head">
+          <button class="back-btn" data-back type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Back
+          </button>
+          <h2 class="stage-title">Join an incoming transfer</h2>
+        </div>
+
         <div class="field">
           <label for="recv-code">Share code</label>
-          <input type="text" id="recv-code" placeholder="e.g. 428193" inputmode="numeric" autocomplete="off" spellcheck="false" />
-        </div>
-        <div class="field">
-          <label>Save location</label>
-          <div class="folder-row">
-            <button id="recv-pickdir" class="secondary">Choose folder…</button>
-            <span id="recv-dirname" class="folder-name muted">No folder selected</span>
+          <input type="text" id="recv-code" placeholder="E.G.  K7-9P3-MX2A" inputmode="latin" autocomplete="off" spellcheck="false" autocapitalize="characters" />
+          <div class="hint-row">
+            <span class="muted small">Codes are short, dashed, case-insensitive.</span>
+            <button id="recv-scan" class="chip-btn hidden" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 7V5a1 1 0 0 1 1-1h2M20 7V5a1 1 0 0 0-1-1h-2M4 17v2a1 1 0 0 0 1 1h2M20 17v2a1 1 0 0 1-1 1h-2M8 8h2v2H8zM14 8h2v2h-2zM8 14h2v2H8zM14 14h2v2h-2z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Scan QR
+            </button>
           </div>
         </div>
-        <div class="action-row">
-          <button id="recv-start" class="primary" disabled>Join and receive</button>
+
+        <div class="field">
+          <label>Save downloads to <button class="info-btn" type="button" data-info="folder" aria-label="Why pick a folder?">i</button></label>
+          <div class="folder-row">
+            <button id="recv-pickdir" class="secondary" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Choose folder…
+            </button>
+            <span id="recv-dirname" class="folder-name muted">No folder chosen (defaults to browser downloads)</span>
+          </div>
         </div>
 
-        <div id="recv-status" class="status" aria-live="polite"></div>
-        <div id="recv-progress-wrap" class="progress-wrap hidden">
-          <progress id="recv-progress" value="0" max="1"></progress>
-          <div id="recv-stats" class="stats"></div>
+        <details class="passphrase-details">
+          <summary>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 1a5 5 0 0 0-5 5v3H6a3 3 0 0 0-3 3v9a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-9a3 3 0 0 0-3-3h-1V6a5 5 0 0 0-5-5Zm-3 5a3 3 0 1 1 6 0v3H9V6Z" fill="currentColor"/></svg>
+            Sender used a passphrase?
+          </summary>
+          <input id="recv-pass" type="password" placeholder="Passphrase the sender chose" autocomplete="off" />
+        </details>
+
+        <video id="scanner-video" class="scanner hidden" muted playsinline></video>
+
+        <div class="action-row right">
+          <button id="recv-go" class="primary big" type="button" disabled>
+            Join and receive
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
       </section>
 
-      <footer class="foot">
-        <span>Signaling: <code id="sig-url">ws://localhost:8787/ws</code></span>
-        <span class="dot">·</span>
-        <span>Best in Chrome or Edge (File System Access API)</span>
-      </footer>
+      <!-- ─── STAGE: active (transfer in flight) ─── -->
+      <section data-stage="active" class="stage">
+        <div class="stage-head">
+          <button class="back-btn" data-back type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Cancel
+          </button>
+          <h2 id="active-title" class="stage-title">Connecting…</h2>
+        </div>
+
+        <div class="link-viz">
+          <div class="link-end">
+            <div id="end-self-glyph" class="end-glyph"></div>
+            <div id="end-self-name" class="end-name">You</div>
+          </div>
+          <div class="link-beam">
+            <div class="beam-pulse"></div>
+            <div id="transport-pill" class="pill pill-faint">
+              <span class="pill-dot"></span>
+              <span id="transport-label">Handshaking…</span>
+              <button class="info-btn info-btn-light" type="button" data-info="transport" aria-label="What does this transport mean?">i</button>
+            </div>
+          </div>
+          <div class="link-end">
+            <div id="end-peer-glyph" class="end-glyph"></div>
+            <div id="end-peer-name" class="end-name muted">…</div>
+          </div>
+        </div>
+
+        <div class="progress-card">
+          <div class="progress-meta">
+            <span id="progress-headline" class="progress-headline">0 B / 0 B</span>
+            <span id="progress-rate" class="progress-rate">—</span>
+          </div>
+          <div class="progress-track">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <div class="progress-foot">
+            <span id="progress-eta" class="muted small">—</span>
+            <span id="progress-files" class="muted small">—</span>
+          </div>
+        </div>
+
+        <ul id="active-filelist" class="filelist"></ul>
+
+        <div id="active-status" class="status" aria-live="polite"></div>
+      </section>
+
+      <!-- ─── STAGE: legal (Privacy / Terms) ─── -->
+      <section data-stage="legal" class="stage">
+        <div class="stage-head">
+          <button class="back-btn" data-back type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Back
+          </button>
+          <h2 id="legal-title" class="stage-title">Privacy</h2>
+        </div>
+        <article id="legal-body" class="legal-body"></article>
+      </section>
+
+      <!-- ─── STAGE: done ─── -->
+      <section data-stage="done" class="stage">
+        <div class="done-card">
+          <div class="done-check">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"/>
+              <path d="m8 12 3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <h2 id="done-title" class="stage-title centered">Transfer complete</h2>
+          <p id="done-sub" class="muted centered"></p>
+          <div class="action-row centered">
+            <button id="done-again" class="primary" type="button">Send something else</button>
+          </div>
+        </div>
+      </section>
     </main>
+
+    <footer class="foot">
+      <span class="foot-block">Signaling: <code id="sig-url">—</code></span>
+      <span class="foot-sep">·</span>
+      <span class="foot-block desktop-only">Best in Chrome / Edge / Safari 16+</span>
+      <span class="foot-sep desktop-only">·</span>
+      <button class="foot-link" type="button" data-legal="privacy">Privacy</button>
+      <span class="foot-sep">·</span>
+      <button class="foot-link" type="button" data-legal="terms">Terms</button>
+      <span class="foot-sep">·</span>
+      <a class="foot-block" id="repo-link" href="https://github.com/" target="_blank" rel="noopener">Source · MIT</a>
+    </footer>
+
+    <!-- Floating popover host (positioned by JS at click time) -->
+    <div id="popover" class="popover hidden" role="dialog" aria-modal="false">
+      <div id="popover-arrow" class="popover-arrow"></div>
+      <div id="popover-body" class="popover-body"></div>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

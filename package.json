@@ -18,7 +18,9 @@
     "test:signaling": "bun test apps/signaling",
     "e2e": "bash scripts/e2e.sh",
     "typecheck": "bun --cwd packages/protocol run typecheck && bun --cwd packages/transfer run typecheck && bun --cwd apps/signaling run typecheck && bun --cwd apps/cli run typecheck && bun --cwd apps/web run typecheck",
-    "dev:web": "bun --cwd apps/web run dev"
+    "dev:web": "bun --cwd apps/web run dev",
+    "build:web": "bun --cwd apps/web run build",
+    "lan": "bun --cwd apps/web run build && WEB_ROOT=../web/dist bun --cwd apps/signaling run start"
   },
   "devDependencies": {
     "@types/bun": "latest",

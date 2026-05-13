@@ -1,3 +1,5 @@
+import { existsSync, statSync } from "node:fs";
+import { extname, join, normalize, resolve } from "node:path";
 import {
   isClientMsg,
   type ClientToServerMsg,
@@ -16,6 +18,62 @@ interface SocketData {
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const MAX_MESSAGE_BYTES = Number(process.env.MAX_MSG_BYTES ?? 64 * 1024);
+
+/**
+ * Optional: serve a static directory for unknown paths. Set
+ *   WEB_ROOT=../web/dist
+ * after running `bun --cwd apps/web run build` to make this single Bun
+ * process host the web UI on the same port as signaling — handy for the
+ * no-internet LAN flow (one URL, one process).
+ */
+const WEB_ROOT = process.env.WEB_ROOT
+  ? resolve(process.cwd(), process.env.WEB_ROOT)
+  : null;
+
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js":   "text/javascript; charset=utf-8",
+  ".mjs":  "text/javascript; charset=utf-8",
+  ".css":  "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".svg":  "image/svg+xml",
+  ".png":  "image/png",
+  ".jpg":  "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico":  "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".map":  "application/json",
+  ".wasm": "application/wasm",
+};
+
+async function serveStatic(root: string, urlPath: string): Promise<Response | null> {
+  const safePath = normalize(urlPath.split("?")[0] ?? "/").replace(/^\/+/, "");
+  let filePath = join(root, safePath);
+  if (!filePath.startsWith(root)) return new Response("forbidden", { status: 403 });
+  try {
+    if (!existsSync(filePath)) {
+      // SPA fallback to index.html for paths without an extension.
+      if (!extname(safePath)) filePath = join(root, "index.html");
+      else return null;
+    } else if (statSync(filePath).isDirectory()) {
+      filePath = join(filePath, "index.html");
+    }
+    if (!existsSync(filePath)) return null;
+    const file = Bun.file(filePath);
+    const ext = extname(filePath).toLowerCase();
+    const headers: Record<string, string> = {
+      "content-type": MIME[ext] ?? "application/octet-stream",
+      "cache-control":
+        ext === ".html" || safePath === "" ? "no-cache" : "public, max-age=3600",
+    };
+    return new Response(file, { headers });
+  } catch {
+    return null;
+  }
+}
 
 const rooms = new RoomManager({
   defaultTtlMs: 30 * 60 * 1000, // 30 min
@@ -45,7 +103,7 @@ function jsonSend(
 const server = Bun.serve<SocketData, {}>({
   hostname: HOST,
   port: PORT,
-  fetch(req, srv) {
+  async fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/healthz") {
       return new Response(
@@ -62,6 +120,13 @@ const server = Bun.serve<SocketData, {}>({
       if (ok) return undefined;
       return new Response("upgrade failed", { status: 400 });
     }
+
+    // Optional: serve the static web app from $WEB_ROOT.
+    if (WEB_ROOT) {
+      const r = await serveStatic(WEB_ROOT, url.pathname);
+      if (r) return r;
+    }
+
     return new Response("DropBeam signaling. WS at /ws, health at /healthz.", {
       status: 200,
     });
@@ -119,6 +184,9 @@ const server = Bun.serve<SocketData, {}>({
 console.log(
   `[dropbeam-signaling] listening on ws://${server.hostname}:${server.port}/ws`,
 );
+if (WEB_ROOT) {
+  console.log(`[dropbeam-signaling] serving web app from ${WEB_ROOT}`);
+}
 
 // ─── handlers ─────────────────────────────────────────────────────────────
 

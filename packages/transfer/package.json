@@ -10,7 +10,8 @@
     "./router": "./src/router.ts",
     "./worker": "./src/worker/index.ts",
     "./worker/transferWorker": "./src/worker/transferWorker.ts",
-    "./sinks": "./src/sinks/index.ts"
+    "./sinks": "./src/sinks/index.ts",
+    "./quic": "./src/quicTransport.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

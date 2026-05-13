@@ -1,0 +1,17 @@
+{
+  "name": "DropBeam — peer-to-peer file transfer",
+  "short_name": "DropBeam",
+  "description": "Fast, private, peer-to-peer file transfer between any devices. Works on your Wi-Fi without internet.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#07080d",
+  "theme_color": "#0a0b10",
+  "icons": [
+    { "src": "/icon.svg",      "sizes": "any",       "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icon-180.svg",  "sizes": "180x180",   "type": "image/svg+xml" },
+    { "src": "/icon-512.svg",  "sizes": "512x512",   "type": "image/svg+xml" }
+  ],
+  "categories": ["utilities", "productivity"]
+}
