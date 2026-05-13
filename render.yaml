@@ -1,0 +1,35 @@
+# DropBeam — Render Blueprint
+# Click "New → Blueprint" on dashboard.render.com, connect this repo, and
+# everything below is provisioned automatically.
+#
+# What you get:
+#   - dropbeam-signaling   Web Service (Bun + WebSockets, Docker)
+#                          Free tier; auto-deploys on push to main.
+#   - HTTPS hostname:      https://dropbeam-signaling.onrender.com
+#   - WebSocket endpoint:  wss://dropbeam-signaling.onrender.com/ws
+#   - Health check:        https://dropbeam-signaling.onrender.com/healthz
+#
+# Keep-alive note: Render Free spins services down after 15 min of inactivity.
+# Set up a free https://uptimerobot.com monitor pinging /healthz every 5 min
+# to keep it warm 24/7 — see DEPLOY.md.
+
+services:
+  - type: web
+    name: dropbeam-signaling
+    runtime: docker
+    plan: free
+    region: oregon          # or frankfurt / singapore — pick closest to users
+    branch: main
+    dockerfilePath: ./apps/signaling/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      # PORT is injected automatically by Render — the signaling server
+      # already reads process.env.PORT, so nothing to set.
+      - key: ROOM_CAPACITY
+        value: "8"
+      - key: MAX_ROOMS
+        value: "10000"

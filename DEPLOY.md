@@ -80,9 +80,44 @@ Vercel project → Settings → Domains. Add your domain (e.g.
 
 ## Part 2 — Deploy the signaling server
 
-Recommended: **Fly.io**. It runs Bun natively, has a generous free
-tier, and gives you a `*.fly.dev` HTTPS+WSS hostname automatically
-(WebSockets included).
+Two paths documented below. **Render is simpler (dashboard only, no CLI),
+Fly.io is more reliable (no sleep).** Both have a free tier. Pick one.
+
+### Path A — Render (dashboard, free, sleeps after 15 min idle)
+
+The repo ships a `render.yaml` Blueprint that wires everything up.
+
+1. Sign up at <https://dashboard.render.com> (use GitHub OAuth — fastest).
+2. Click **New → Blueprint**. Pick the `DropBeam` repo. Render reads
+   `render.yaml` and shows you the service it'll create.
+3. Click **Apply**. Wait ~3 minutes for the first build.
+4. Once it's green, the URL appears at the top of the service page,
+   e.g. `https://dropbeam-signaling.onrender.com`. The WebSocket
+   endpoint is `wss://dropbeam-signaling.onrender.com/ws`.
+5. Sanity check:
+   ```bash
+   curl https://dropbeam-signaling.onrender.com/healthz
+   # → {"ok":true,"rooms":0,"uptimeMs":...}
+   ```
+
+#### Keep-alive (5-minute fix for Render's sleep)
+
+Render Free spins services down after 15 minutes of no traffic. First
+request after sleep takes ~30 s — bad for signaling. The free fix:
+
+1. Sign up at <https://uptimerobot.com> (free, no card).
+2. **New Monitor** → HTTP(s) → URL: `https://dropbeam-signaling.onrender.com/healthz`
+   → Interval: 5 minutes.
+3. Done. The ping keeps the service warm 24/7. Free, set-and-forget.
+
+(If you'd rather pay $7/month, the Render Starter plan doesn't sleep.
+But honestly the UptimeRobot trick works fine.)
+
+### Path B — Fly.io (CLI, $5/mo credit, always-on)
+
+Fly runs Bun natively, gives you a `*.fly.dev` HTTPS+WSS hostname
+automatically, and doesn't sleep. The repo ships `apps/signaling/Dockerfile`
+and you create a `fly.toml` per the instructions below.
 
 ### 2a. Install flyctl
 
