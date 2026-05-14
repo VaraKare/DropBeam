@@ -1,7 +1,7 @@
 {
-  "name": "DropBeam — peer-to-peer file transfer",
+  "name": "DropBeam · drop. catch. done.",
   "short_name": "DropBeam",
-  "description": "Fast, private, peer-to-peer file transfer between any devices. Works on your Wi-Fi without internet.",
+  "description": "Fast, private, peer-to-peer file transfer between any devices. Drop, catch, done. Works on your Wi-Fi without internet.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -9,18 +9,18 @@
     "packages/*"
   ],
   "scripts": {
-    "dev:signaling": "bun --cwd apps/signaling run dev",
-    "start:signaling": "bun --cwd apps/signaling run start",
+    "dev:signaling": "cd apps/signaling && bun run dev",
+    "start:signaling": "cd apps/signaling && bun run start",
     "cli": "bun apps/cli/src/index.ts",
     "test": "bun test",
     "test:protocol": "bun test packages/protocol",
     "test:transfer": "bun test packages/transfer",
     "test:signaling": "bun test apps/signaling",
     "e2e": "bash scripts/e2e.sh",
-    "typecheck": "bun --cwd packages/protocol run typecheck && bun --cwd packages/transfer run typecheck && bun --cwd apps/signaling run typecheck && bun --cwd apps/cli run typecheck && bun --cwd apps/web run typecheck",
-    "dev:web": "bun --cwd apps/web run dev",
-    "build:web": "bun --cwd apps/web run build",
-    "lan": "bun --cwd apps/web run build && WEB_ROOT=../web/dist bun --cwd apps/signaling run start"
+    "typecheck": "cd packages/protocol && bun run typecheck && cd ../transfer && bun run typecheck && cd ../../apps/signaling && bun run typecheck && cd ../cli && bun run typecheck && cd ../web && bun run typecheck",
+    "dev:web": "cd apps/web && bun run dev",
+    "build:web": "cd apps/web && bun run build",
+    "lan": "cd apps/web && bun run build && cd ../signaling && WEB_ROOT=../web/dist bun run start"
   },
   "devDependencies": {
     "@types/bun": "latest",

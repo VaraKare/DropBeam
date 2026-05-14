@@ -110,6 +110,12 @@ body {
   transform: translate(-1px, -1px);
   box-shadow: 4px 4px 0 var(--ink);
 }
+.brand-stack {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1;
+}
 .brand-name {
   font-size: 22px;
   font-weight: 900;
@@ -119,6 +125,15 @@ body {
   background: none;
   -webkit-background-clip: initial;
   background-clip: initial;
+}
+.brand-tag {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink-mute);
+  text-transform: lowercase;
+  margin-top: 3px;
 }
 .top-right { display: inline-flex; gap: 10px; align-items: center; }
 
@@ -1079,6 +1094,15 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   width: fit-content;
 }
 .foot-name { font-weight: 800; color: var(--ink); }
+.foot-tag-strong {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--ink);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
 .foot code {
   background: var(--paper);
   border: var(--border-thin) solid var(--ink);
