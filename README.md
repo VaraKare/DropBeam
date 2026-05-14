@@ -327,11 +327,24 @@ click "Privacy" in the footer.
 
 ## More docs
 
+- **[SETUP.md](./SETUP.md)** — **start here.** Plain-English fork →
+  install → run → first-transfer walkthrough.
 - **[FEATURES.md](./FEATURES.md)** — comprehensive feature catalog
   (use this as the source-of-truth for building marketing pages, app
   listings, or mobile screens).
-- **[FORK.md](./FORK.md)** — how to fork, customize, self-host, and
-  contribute back.
+- **[DEPLOY.md](./DEPLOY.md)** — production deploy: Vercel for the web
+  app, Koyeb (or Render / Fly.io) for the signaling server. Includes
+  the Vercel CLI walkthrough and a section on running ads honestly.
+- **[FORK.md](./FORK.md)** — coding conventions and where to add new
+  transports / brandings / self-hosted deploys.
+
+## Mission
+
+If this ever earns money — ads, freemium API, office tier — **30 %
+is donated to people in need** (recipients voted on quarterly, receipts
+posted publicly) and **70 % is reinvested** in infrastructure, dev, and
+keeping the free tier alive. Built by Vara Prasad Karewar
+([@VaraKare](https://github.com/VaraKare) · [@the.varaprasad](https://instagram.com/the.varaprasad)).
 
 ## License
 

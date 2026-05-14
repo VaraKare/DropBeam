@@ -24,16 +24,14 @@
     <header class="top">
       <a class="brand" href="/">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="28" height="28" fill="none">
-            <defs>
-              <linearGradient id="g" x1="0" y1="0" x2="32" y2="32">
-                <stop offset="0" stop-color="#5b8cff" />
-                <stop offset="1" stop-color="#c46bff" />
-              </linearGradient>
-            </defs>
-            <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#g)" />
-            <path d="M10 9h5.5a7 7 0 0 1 0 14H10V9Zm3.5 3v8h2a4 4 0 0 0 0-8h-2Z" fill="#fff"/>
-            <path d="M21.5 13.5 24 11l2.5 2.5M24 11v6.5" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          <!-- Pixel-block "↓" mark. Pure shapes, no gradients — matches the brutalist UI. -->
+          <svg viewBox="0 0 16 16" width="24" height="24" fill="none" shape-rendering="crispEdges">
+            <rect x="6" y="2" width="4" height="2" fill="#0A0A0A"/>
+            <rect x="6" y="4" width="4" height="2" fill="#0A0A0A"/>
+            <rect x="6" y="6" width="4" height="2" fill="#0A0A0A"/>
+            <rect x="3" y="8" width="10" height="2" fill="#0A0A0A"/>
+            <rect x="5" y="10" width="6" height="2" fill="#0A0A0A"/>
+            <rect x="7" y="12" width="2" height="2" fill="#0A0A0A"/>
           </svg>
         </span>
         <span class="brand-name">DropBeam</span>
@@ -60,10 +58,16 @@
             Send <em>anything</em> to <em>any</em> device.
           </h1>
           <p class="lede">
-            Phone → laptop. Mac → Windows. Android → iPad. Files stream
-            <strong>peer-to-peer</strong>, end-to-end encrypted.
+            Phone → laptop. Mac → Windows. Android → iPad. Drop one file or fifty.
+            Files stream <strong>peer-to-peer</strong>, end-to-end encrypted.
             <span class="lede-em">No accounts. No upload servers. No size limit.</span>
           </p>
+          <div class="tag-row">
+            <span class="tag tag-yellow">📦 ANY SIZE · 50&nbsp;GB+ FINE</span>
+            <span class="tag tag-mint">🔒 END-TO-END ENCRYPTED</span>
+            <span class="tag tag-coral">📡 WORKS OFFLINE ON LAN</span>
+            <span class="tag tag-lilac">🎯 BULK SHARE</span>
+          </div>
         </div>
 
         <div class="mode-toggle" role="tablist" aria-label="Connection mode">
@@ -131,13 +135,20 @@
           </li>
           <li>
             <span class="feat-ico">∞</span>
-            <div><b>Any size.</b> Streams from disk, never loaded into memory. 50 GB in your browser — fine.</div>
+            <div><b>Any size, no Chrome bloat.</b> Streams from disk, never loaded into memory. 50 GB — fine.</div>
           </li>
           <li>
             <span class="feat-ico">📡</span>
             <div><b>Same Wi-Fi works offline.</b> Two devices on one router don't need an internet connection.</div>
           </li>
         </ul>
+
+        <div class="learn-more-row">
+          <button class="learn-more" type="button" data-blog>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 16v-5m0-3h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            What is this? · How it works · Where the money goes
+          </button>
+        </div>
       </section>
 
       <!-- ─── STAGE: send (pick files) ─── -->
@@ -161,8 +172,8 @@
               <path d="M12 3v12m0-12-4 4m4-4 4 4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </div>
-          <div class="dropzone-primary"><span class="desktop-only">Drop files here, paste, or </span><span class="mobile-only">Tap to </span><span class="desktop-only">click to </span>choose</div>
-          <div class="dropzone-hint">Any number. Any size. Streams directly to the other device.</div>
+          <div class="dropzone-primary"><span class="desktop-only">Drop files, paste, or click to choose</span><span class="mobile-only">Tap to choose files</span></div>
+          <div class="dropzone-hint">Drop ONE file or FIFTY. Any size. Streams directly to the other device.</div>
         </button>
 
         <ul id="send-filelist" class="filelist"></ul>
@@ -344,6 +355,18 @@
         <article id="legal-body" class="legal-body"></article>
       </section>
 
+      <!-- ─── STAGE: blog / about ─── -->
+      <section data-stage="blog" class="stage">
+        <div class="stage-head">
+          <button class="back-btn" data-back type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Back
+          </button>
+          <h2 class="stage-title">About DropBeam</h2>
+        </div>
+        <article id="blog-body" class="blog-body"></article>
+      </section>
+
       <!-- ─── STAGE: done ─── -->
       <section data-stage="done" class="stage">
         <div class="done-card">
@@ -363,16 +386,38 @@
     </main>
 
     <footer class="foot">
-      <span class="foot-block">Signaling: <code id="sig-url">—</code></span>
-      <span class="foot-sep">·</span>
-      <span class="foot-block desktop-only">Best in Chrome / Edge / Safari 16+</span>
-      <span class="foot-sep desktop-only">·</span>
-      <button class="foot-link" type="button" data-legal="privacy">Privacy</button>
-      <span class="foot-sep">·</span>
-      <button class="foot-link" type="button" data-legal="terms">Terms</button>
-      <span class="foot-sep">·</span>
-      <a class="foot-block" id="repo-link" href="https://github.com/" target="_blank" rel="noopener">Source · MIT</a>
+      <div class="foot-col">
+        <h4>DropBeam</h4>
+        <p>Peer-to-peer file transfer that doesn't suck. Direct, encrypted, no upload bucket — for any size, any device, any direction.</p>
+        <span class="foot-mission">30 % donated &nbsp;·&nbsp; 70 % reinvested</span>
+      </div>
+      <div class="foot-col">
+        <h4>Product</h4>
+        <button class="foot-link" type="button" data-blog>About</button>
+        <button class="foot-link" type="button" data-legal="privacy">Privacy</button>
+        <button class="foot-link" type="button" data-legal="terms">Terms</button>
+        <a href="https://github.com/VaraKare/DropBeam" target="_blank" rel="noopener">Source · MIT</a>
+      </div>
+      <div class="foot-col">
+        <h4>Contact</h4>
+        <span class="foot-name">Vara Prasad Karewar</span>
+        <a href="mailto:addleadsb2c@gmail.com">addleadsb2c@gmail.com</a>
+        <a href="https://github.com/VaraKare" target="_blank" rel="noopener">github.com/VaraKare</a>
+        <a href="https://instagram.com/the.varaprasad" target="_blank" rel="noopener">instagram.com/the.varaprasad</a>
+      </div>
+      <div class="foot-col">
+        <h4>Status</h4>
+        <p>Signaling: <code id="sig-url">—</code></p>
+        <p class="muted">Best in Chrome · Edge · Safari 16+</p>
+      </div>
     </footer>
+
+    <!-- Ad slot — disabled by default. See SETUP.md ("Running ads") for the
+         privacy implications before enabling. Flip `.ad-slot` display in CSS
+         and paste your ad provider's script tag inside. -->
+    <div class="ad-slot" aria-label="advertisement">
+      <!-- e.g. Google AdSense, Carbon Ads, EthicalAds — your call -->
+    </div>
 
     <!-- Floating popover host (positioned by JS at click time) -->
     <div id="popover" class="popover hidden" role="dialog" aria-modal="false">

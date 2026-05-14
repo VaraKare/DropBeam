@@ -80,44 +80,96 @@ Vercel project → Settings → Domains. Add your domain (e.g.
 
 ## Part 2 — Deploy the signaling server
 
-Two paths documented below. **Render is simpler (dashboard only, no CLI),
-Fly.io is more reliable (no sleep).** Both have a free tier. Pick one.
+Three paths, all valid. **Pick Koyeb first** (free, no sleep, dashboard-only).
+If you've burned your Render free slot or want CLI control, the alternatives
+follow.
 
-### Path A — Render (dashboard, free, sleeps after 15 min idle)
+### Path A — Koyeb (recommended: free, no sleep, dashboard)
 
-The repo ships a `render.yaml` Blueprint that wires everything up.
+Free tier: one always-on web service with 512 MB RAM, custom HTTPS+WSS
+hostname, auto-deploy from GitHub. **No sleep, no card.**
 
-1. Sign up at <https://dashboard.render.com> (use GitHub OAuth — fastest).
-2. Click **New → Blueprint**. Pick the `DropBeam` repo. Render reads
-   `render.yaml` and shows you the service it'll create.
-3. Click **Apply**. Wait ~3 minutes for the first build.
-4. Once it's green, the URL appears at the top of the service page,
-   e.g. `https://dropbeam-signaling.onrender.com`. The WebSocket
-   endpoint is `wss://dropbeam-signaling.onrender.com/ws`.
-5. Sanity check:
-   ```bash
-   curl https://dropbeam-signaling.onrender.com/healthz
-   # → {"ok":true,"rooms":0,"uptimeMs":...}
-   ```
+1. Sign up at <https://app.koyeb.com> (GitHub OAuth — fastest).
+2. Click **Create Service** → pick **GitHub** as source.
+3. Select the `VaraKare/DropBeam` repo, branch **main**.
+4. **Build & deployment**:
+   - Builder: **Dockerfile**
+   - Dockerfile location: **`apps/signaling/Dockerfile`**
+   - Build context: **`.`** (the repo root, NOT `apps/signaling/`)
+5. **Service type**: Web Service.
+6. **Ports**: add one — port **8787**, protocol **HTTP**, path **`/`**, public.
+   Koyeb proxies WebSocket over HTTPS automatically; no extra setting needed.
+7. **Health checks**: HTTP, path `/healthz`, port 8787.
+8. **Environment variables**: leave defaults. (Optionally set
+   `ROOM_CAPACITY=8`, `MAX_ROOMS=10000`.)
+9. **Region**: pick the one closest to your users (Frankfurt / Washington /
+   Singapore). Free tier is one region.
+10. **Instance**: **Free** plan, **Nano** instance.
+11. Click **Deploy**. First build takes ~4 min.
+12. You'll get a URL like `https://dropbeam-signaling-<you>.koyeb.app`.
+    The WebSocket endpoint is `wss://dropbeam-signaling-<you>.koyeb.app/ws`.
+13. Sanity check:
+    ```bash
+    curl https://dropbeam-signaling-<you>.koyeb.app/healthz
+    # → {"ok":true,"rooms":0,"uptimeMs":...}
+    ```
 
-#### Keep-alive (5-minute fix for Render's sleep)
+That's it. No keep-alive ping needed — Koyeb free instances don't sleep.
 
-Render Free spins services down after 15 minutes of no traffic. First
-request after sleep takes ~30 s — bad for signaling. The free fix:
+### Path B — Render (only if you have a free slot)
 
-1. Sign up at <https://uptimerobot.com> (free, no card).
-2. **New Monitor** → HTTP(s) → URL: `https://dropbeam-signaling.onrender.com/healthz`
-   → Interval: 5 minutes.
-3. Done. The ping keeps the service warm 24/7. Free, set-and-forget.
+Render Free is capped at **one** free web service per account. If you've
+already used yours on something else, Render will ask you to upgrade — go
+back to Path A (Koyeb). If your free slot is available, the repo ships
+`render.yaml` for one-click Blueprint deploy.
 
-(If you'd rather pay $7/month, the Render Starter plan doesn't sleep.
-But honestly the UptimeRobot trick works fine.)
+1. <https://dashboard.render.com> → **New → Blueprint** → pick the repo
+   → **Apply**.
+2. Wait ~3 min for the build.
+3. Service URL appears at the top; WebSocket is `wss://<that>/ws`.
+4. **Keep-alive (important):** Render Free sleeps after 15 min of idle.
+   Sign up free at <https://uptimerobot.com>, add an HTTP monitor on
+   `<your-url>/healthz` with 5-minute interval. Keeps it warm 24/7.
 
-### Path B — Fly.io (CLI, $5/mo credit, always-on)
+### Path C — Fly.io (CLI, $5/mo free credit, always-on)
 
-Fly runs Bun natively, gives you a `*.fly.dev` HTTPS+WSS hostname
-automatically, and doesn't sleep. The repo ships `apps/signaling/Dockerfile`
-and you create a `fly.toml` per the instructions below.
+For when you want CLI control and CDN-edge regions. Fly removed the
+always-free tier but gives every account a $5/mo credit that comfortably
+covers a small Bun service.
+
+```bash
+brew install flyctl
+fly auth login
+```
+
+Add a `fly.toml` at the repo root:
+
+```toml
+app = "dropbeam-signaling"   # change to your unique name
+primary_region = "iad"       # sjc / ams / fra / sin / blr — pick closest
+
+[build]
+  dockerfile = "apps/signaling/Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+```
+
+Then:
+
+```bash
+fly launch --no-deploy
+fly deploy
+# → wss://dropbeam-signaling.fly.dev/ws
+```
 
 ### 2a. Install flyctl
 
@@ -286,9 +338,80 @@ const iceServers: RTCIceServer[] = [
 ## Quick deploy checklist
 
 - [ ] `apps/web/vercel.json` added.
-- [ ] Fly account + flyctl installed.
-- [ ] `apps/signaling/Dockerfile` and `fly.toml` added.
-- [ ] `fly launch --no-deploy && fly deploy` succeeded; `/healthz` returns ok.
+- [ ] Signaling deployed (Koyeb / Render / Fly); `/healthz` returns ok.
 - [ ] Vercel project linked to the GitHub repo, root dir `apps/web`.
-- [ ] `VITE_SIGNALING_URL` set in Vercel to your Fly URL.
+- [ ] `VITE_SIGNALING_URL` set in Vercel to your signaling host's `wss://…/ws`.
 - [ ] First production transfer works on two devices.
+
+---
+
+## Vercel via CLI (alternative to the dashboard)
+
+If you'd rather not click through Vercel's dashboard, the CLI does the
+same thing in three commands. Useful when you want to script deploys or
+keep both deploys reproducible.
+
+```bash
+# 1. Install + auth (one-time)
+npm i -g vercel
+vercel login           # opens a browser to authenticate
+
+# 2. From the repo root, link the project
+cd apps/web
+vercel link
+#   ? Set up "apps/web"?          Yes
+#   ? Which scope?                <your-personal-account>
+#   ? Link to existing project?   No
+#   ? What's your project's name? dropbeam
+#   ? Code directory?             ./ (already in apps/web)
+#   ? Override settings?          No
+
+# 3. Set the env var pointing at your signaling host
+vercel env add VITE_SIGNALING_URL production
+#   When prompted, paste: wss://<your-signaling-host>/ws
+
+# 4. Deploy to production
+vercel deploy --prod
+#   → https://dropbeam-<hash>.vercel.app
+```
+
+Subsequent deploys are just `vercel deploy --prod` from `apps/web/`. Or
+let Vercel auto-deploy from GitHub pushes (the default when you link the
+GitHub repo from the dashboard).
+
+---
+
+## Running ads (the honest version)
+
+The codebase ships an `<div class="ad-slot">` in `apps/web/index.html`
+that's `display: none` by default. **Read this before you flip it on.**
+
+DropBeam's privacy posture is the product's biggest differentiator
+("zero tracking, zero analytics, we cannot see your files"). Any
+third-party ad SDK — Google AdSense, Carbon Ads, etc. — sets cookies
+and pings their servers when the page loads. That's tracking.
+
+If you ship ads, **be honest about it:**
+
+1. Update `apps/web/src/main.ts` → `PRIVACY_HTML` to disclose the ad
+   provider, what data they collect, and a link to their privacy policy.
+2. Add a one-line cookie consent banner if you target users in the EU
+   (UK GDPR / ePrivacy require it).
+3. Consider keeping ads on a separate marketing page (`/about`, blog
+   posts) and never on the transfer surface itself. Many transfer
+   apps that "respect your files" still run ads on their landing page —
+   it's a defensible line.
+
+A privacy-friendlier alternative: **EthicalAds** or **Carbon Ads** —
+both serve un-targeted ads with no cookies. Lower revenue but matches
+the brand.
+
+To enable:
+
+```css
+/* apps/web/src/styles.css */
+.ad-slot { display: block; }   /* was: none */
+```
+
+Then paste your provider's script tag inside the `<div class="ad-slot">`
+element in `index.html`.

@@ -118,7 +118,7 @@ const $ = <T extends Element>(sel: string): T => {
   return el;
 };
 
-type Stage = "idle" | "send-pick" | "send-share" | "recv-pick" | "active" | "done" | "legal";
+type Stage = "idle" | "send-pick" | "send-share" | "recv-pick" | "active" | "done" | "legal" | "blog";
 
 const stages: Record<Stage, HTMLElement> = {
   idle:        $('[data-stage="idle"]'),
@@ -128,6 +128,7 @@ const stages: Record<Stage, HTMLElement> = {
   active:      $('[data-stage="active"]'),
   done:        $('[data-stage="done"]'),
   legal:       $('[data-stage="legal"]'),
+  blog:        $('[data-stage="blog"]'),
 };
 
 let history: Stage[] = ["idle"];
@@ -1093,6 +1094,63 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-legal]")) 
     const which = btn.getAttribute("data-legal") as "privacy" | "terms";
     showLegal(which);
   });
+}
+
+/* ─────────────── blog / about stage ─────────────── */
+
+const blogBody = $<HTMLElement>("#blog-body");
+
+const BLOG_HTML = `
+<p><span class="pill-inline">ABOUT</span> DropBeam is a free, open-source file transfer tool that's a single page in your browser. No app to install (unless you want to). No accounts. No upload servers. The two devices talk straight to each other.</p>
+
+<h3>What it does that others don't</h3>
+<ul>
+  <li><strong>Mega files, no Chrome bloat.</strong> Streams from disk straight to disk via the File System Access API. RAM stays at ~50 MB whether you're sending 5 MB or 50 GB. WeTransfer caps you at 2 GB and uploads to their servers; we don't.</li>
+  <li><strong>Single share or bulk share.</strong> Drop one file or fifty in one go. Everything is queued into a single transfer session, hashed, and verified on the other side.</li>
+  <li><strong>Works over the internet AND on a LAN with no internet.</strong> "Same Wi-Fi" mode uses only host candidates — two phones in a coffee shop with broken Wi-Fi can still send to each other. "Anywhere" mode punches through NATs with STUN; a TURN relay is the last-resort fallback.</li>
+  <li><strong>End-to-end encrypted in transit, optionally with your own passphrase.</strong> DTLS is on by default. Tick the passphrase box and every chunk is AES-GCM-256 encrypted with a key only you and the receiver know.</li>
+  <li><strong>Browser-only. Cross-platform by accident.</strong> Phone ↔ Windows. Mac ↔ Android. iPad ↔ Linux. Same code path on every device — there's no platform-specific app to maintain.</li>
+</ul>
+
+<h3>Where the money goes (when there is any)</h3>
+<p>If this ever earns money — through ads, freemium tiers, or office API — the split is fixed and public:</p>
+
+<div class="mission-split">
+  <div class="mission-card donate">
+    <span class="pct">30 %</span>
+    <strong>Donated to people in need.</strong> Direct donations to vetted causes. The recipient is community-voted each quarter and posted publicly with receipts.
+  </div>
+  <div class="mission-card scale">
+    <span class="pct">70 %</span>
+    <strong>Reinvested in DropBeam.</strong> Infrastructure (TURN servers, signaling capacity), full-time developers, and the free tier that keeps the core promise alive.
+  </div>
+</div>
+
+<h3>Coming next</h3>
+<ul>
+  <li><strong>DropBeam API (freemium).</strong> Office tier — drop-in WebRTC signaling for your own apps, with priority TURN, custom branding, and audit logs. Generous free tier.</li>
+  <li><strong>Native mobile apps.</strong> iOS (MultipeerConnectivity) and Android (Wi-Fi Direct) for AirDrop-class same-room transfers, ~10× the throughput of the browser path.</li>
+  <li><strong>Federated discovery.</strong> Optional "see other DropBeam devices on this Wi-Fi" pane, like AirDrop's nearby tray.</li>
+</ul>
+
+<h3>How to be sure we mean it</h3>
+<ul>
+  <li><strong>The code is open source (MIT).</strong> Audit it, fork it, self-host it. There's nothing hidden on the server side because there's no file-handling server.</li>
+  <li><strong>The privacy posture is checkable.</strong> Open DevTools → Network and watch a transfer: you'll see one WebSocket to the signaling host (small text messages — SDP, ICE) and then file bytes going peer-to-peer with no upload request.</li>
+  <li><strong>The donation receipts will be public.</strong> Quarterly post on the blog with proof of transfer to recipients.</li>
+</ul>
+
+<h3>Built by</h3>
+<p>Vara Prasad Karewar (<a href="https://github.com/VaraKare" target="_blank" rel="noopener" style="color:inherit;font-weight:700;text-decoration:underline">@VaraKare</a>). Solo. If you want to help — code, design, money, or just feedback — get in touch via the contact links in the footer.</p>
+`;
+
+function showBlog(): void {
+  blogBody.innerHTML = BLOG_HTML;
+  goto("blog");
+}
+
+for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-blog]")) {
+  btn.addEventListener("click", () => showBlog());
 }
 
 /* ─────────────── safeguards: keep mobile transfers alive ─────────────── */
