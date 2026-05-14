@@ -381,6 +381,74 @@ GitHub repo from the dashboard).
 
 ---
 
+## SEO — sitemap, Open Graph image, Search Console
+
+The repo ships everything needed for Google + Bing to index DropBeam
+well, including the per-route titles, descriptions, JSON-LD structured
+data, sitemap, and a social-card image. There are two manual steps
+you do once before launch.
+
+### 1 — Convert the OG image to PNG
+
+`apps/web/public/og.svg` is the editable source (1200×630, the
+social-card design). Twitter/LinkedIn don't render SVG previews —
+they need a PNG at the same path:
+
+```bash
+# one-time tool install
+brew install librsvg
+
+# convert
+rsvg-convert -w 1200 -h 630 apps/web/public/og.svg > apps/web/public/og.png
+
+# commit the rendered file
+git add apps/web/public/og.png
+git commit -m "build: render og.png from og.svg"
+git push
+```
+
+After the next Vercel deploy, paste your URL into Twitter's card
+validator (<https://cards-dev.twitter.com/validator>) and Facebook's
+sharing debugger (<https://developers.facebook.com/tools/debug/>) to
+make sure they pick up the card.
+
+### 2 — Submit the sitemap to Google Search Console
+
+`apps/web/public/sitemap.xml` lists `/`, `/about`, `/features`,
+`/privacy`, `/terms`. The Vercel rewrites in `vercel.json` make all
+five real URLs (each loads the SPA and `main.ts` swaps the document
+title + meta description to the right values, so Google sees five
+distinct pages — that's how you earn sitelinks under your main result).
+
+After deploying to Vercel:
+
+1. Open <https://search.google.com/search-console>.
+2. **Add Property** → URL prefix → paste your Vercel URL (or custom
+   domain when you have one).
+3. Verify via the DNS TXT record method (or the easier HTML tag method
+   if you're on a Vercel domain).
+4. In the left nav: **Sitemaps** → enter `sitemap.xml` → **Submit**.
+5. Wait 1–3 days. Google will start indexing all five routes. Sitelinks
+   appear automatically once Google has enough data and clicks to
+   trust the site structure (usually weeks-to-months after launch).
+
+Bonus for Bing: do the same at <https://www.bing.com/webmasters>.
+Bing's market share is small but the indexing is much faster (~hours).
+
+### 3 — When you get a custom domain
+
+Update these three files in one PR:
+
+| File | Change |
+|------|--------|
+| `apps/web/index.html` | `<link rel="canonical" href="...">` → your domain |
+| `apps/web/public/sitemap.xml` | replace relative `<loc>` paths with absolute `https://yourdomain/...` |
+| `apps/web/public/robots.txt` | `Sitemap: https://yourdomain/sitemap.xml` |
+
+Then re-submit the sitemap in Search Console.
+
+---
+
 ## Running ads (the honest version)
 
 The codebase ships an `<div class="ad-slot">` in `apps/web/index.html`

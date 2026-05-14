@@ -325,6 +325,7 @@ shareNativeBtn.addEventListener("click", async () => {
 function flashCopy(btn: HTMLButtonElement): void {
   const original = btn.innerHTML;
   btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m5 12 5 5L20 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Copied';
+  if ("vibrate" in navigator) navigator.vibrate?.(15);
   setTimeout(() => { btn.innerHTML = original; }, 1200);
 }
 
@@ -828,6 +829,8 @@ function onTransferDone(subtitle: string): void {
   doneTitle.textContent = "Transfer complete";
   doneSub.textContent = subtitle;
   goto("done");
+  burstConfetti();
+  if ("vibrate" in navigator) navigator.vibrate?.([30, 80, 30]);
 }
 
 function onTransferFailed(message: string): void {
@@ -900,17 +903,174 @@ function waitForSdp(
   });
 }
 
-/* ─────────────── deep link auto-join ─────────────── */
+/* ─────────────── deep link auto-join + SEO route handling ─────────────── */
 
-(function autoJoinFromUrl(): void {
+interface RouteMeta {
+  title: string;
+  description: string;
+  stage?: Stage;
+  legal?: "privacy" | "terms";
+}
+
+const ROUTES: Record<string, RouteMeta> = {
+  "/": {
+    title: "DropBeam · big file transfer, any device, no cloud · free peer-to-peer",
+    description: "DropBeam — any size, any device, no cloud. Free peer-to-peer file transfer for big files (50 GB+), large videos, photos, folders. End-to-end encrypted, no upload server, no account.",
+  },
+  "/about": {
+    title: "About DropBeam · how peer-to-peer file transfer actually works",
+    description: "DropBeam is open-source P2P file transfer in your browser. No upload bucket, no size cap. Learn what it does, where the money goes (30 % donated), and what's coming.",
+    stage: "blog",
+  },
+  "/blog": {
+    title: "DropBeam Blog · peer-to-peer file transfer, mega files, no cloud",
+    description: "Articles on big file transfer, P2P file sharing, WeTransfer alternatives, AirDrop for any device.",
+    stage: "blog",
+  },
+  "/features": {
+    title: "DropBeam features · 50 GB+ files, LAN mode, QR pairing, bulk share",
+    description: "Every DropBeam capability: mega-file streaming, LAN mode that works without internet, QR pairing, encrypted bulk transfers, browser-only cross-platform.",
+    stage: "blog",
+  },
+  "/privacy": {
+    title: "DropBeam Privacy · we never see your files",
+    description: "DropBeam is peer-to-peer. The signaling server only introduces two devices. No upload bucket, no analytics, no cookies, no accounts.",
+    stage: "legal",
+    legal: "privacy",
+  },
+  "/terms": {
+    title: "DropBeam Terms of Use · open-source, no warranty, MIT-licensed",
+    description: "Terms for using DropBeam: free, open-source under MIT, no warranty, no liability for in-transit failures. Don't use it for illegal sharing.",
+    stage: "legal",
+    legal: "terms",
+  },
+};
+
+function applyRouteMeta(path: string): void {
+  const meta = ROUTES[path] ?? ROUTES["/"]!;
+  document.title = meta.title;
+  let desc = document.querySelector('meta[name="description"]');
+  if (!desc) {
+    desc = document.createElement("meta");
+    desc.setAttribute("name", "description");
+    document.head.appendChild(desc);
+  }
+  desc.setAttribute("content", meta.description);
+  let canon = document.querySelector('link[rel="canonical"]');
+  if (canon) canon.setAttribute("href", path);
+}
+
+(function routeOnLoad(): void {
+  const path = location.pathname;
+  const meta = ROUTES[path];
+  applyRouteMeta(path);
+
+  // ?c=CODE deep-link auto-join (anywhere on the site).
   const params = new URLSearchParams(location.search);
   const code = params.get("c");
   if (code && code.length >= 4) {
     recvCodeInput.value = code.toUpperCase();
     updateRecvButton();
     goto("recv-pick");
+    return;
   }
+
+  // Otherwise route to the right in-app stage based on pathname.
+  if (meta?.stage === "blog") showBlog();
+  else if (meta?.stage === "legal" && meta.legal) showLegal(meta.legal);
 })();
+
+// Update <title> + meta description whenever the user changes stages so
+// the in-app navigation also produces clean per-route SEO signals when
+// Google's JS-renderer crawls.
+const _originalGoto = goto;
+(window as unknown as { __goto?: typeof goto }).__goto = _originalGoto;
+
+/* ─────────────── memorable moments ─────────────── */
+
+// Rotating hero word — the first <em> in the title cycles through
+// synonyms so the page has a tiny bit of liveness when someone lands.
+(function rotateHeroWord(): void {
+  const words = ["anything", "any file", "any folder", "any size", "any movie", "any photo", "any ZIP", "5 GB", "50 GB"];
+  const ems = document.querySelectorAll<HTMLElement>(".title em");
+  const first = ems[0];
+  if (!first) return;
+  let i = 0;
+  setInterval(() => {
+    if (!document.querySelector('[data-stage="idle"].active')) return; // pause off-idle
+    i = (i + 1) % words.length;
+    first.style.transition = "opacity 0.18s ease-out, transform 0.18s ease-out";
+    first.style.opacity = "0";
+    first.style.transform = "rotate(-1.2deg) translateY(-4px)";
+    setTimeout(() => {
+      first.textContent = words[i]!;
+      first.style.opacity = "1";
+      first.style.transform = "rotate(-1.2deg) translateY(0)";
+    }, 200);
+  }, 2400);
+})();
+
+// Confetti — tiny canvas burst on transfer-done. ~50 lines, zero deps.
+function burstConfetti(): void {
+  const canvas = document.createElement("canvas");
+  canvas.style.cssText =
+    "position:fixed;inset:0;z-index:9998;pointer-events:none;width:100%;height:100%";
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) { canvas.remove(); return; }
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.width = window.innerWidth * dpr;
+  const h = canvas.height = window.innerHeight * dpr;
+  ctx.scale(dpr, dpr);
+
+  const colors = ["#FCE43B", "#7BE0B5", "#FF8FB0", "#C9B6FF", "#9ED8FF", "#0A0A0A"];
+  type P = { x: number; y: number; vx: number; vy: number; w: number; h: number; rot: number; vrot: number; color: string };
+  const pieces: P[] = [];
+  const N = 140;
+  const cx = (w / dpr) / 2;
+  const cy = (h / dpr) / 2;
+  for (let i = 0; i < N; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 6 + Math.random() * 12;
+    pieces.push({
+      x: cx,
+      y: cy,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 3,
+      w: 6 + Math.random() * 8,
+      h: 8 + Math.random() * 6,
+      rot: Math.random() * Math.PI,
+      vrot: (Math.random() - 0.5) * 0.3,
+      color: colors[Math.floor(Math.random() * colors.length)]!,
+    });
+  }
+
+  let frame = 0;
+  const maxFrames = 110;
+  const tick = (): void => {
+    ctx.clearRect(0, 0, w / dpr, h / dpr);
+    let stillAlive = false;
+    for (const p of pieces) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.35;            // gravity
+      p.vx *= 0.99;            // drag
+      p.rot += p.vrot;
+      if (p.y < h / dpr + 30) stillAlive = true;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    frame++;
+    if (stillAlive && frame < maxFrames) requestAnimationFrame(tick);
+    else canvas.remove();
+  };
+  requestAnimationFrame(tick);
+}
 
 /* ─────────────── PWA install ─────────────── */
 

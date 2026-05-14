@@ -4,8 +4,13 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
+    { "source": "/about",    "destination": "/index.html" },
+    { "source": "/features", "destination": "/index.html" },
+    { "source": "/privacy",  "destination": "/index.html" },
+    { "source": "/terms",    "destination": "/index.html" },
+    { "source": "/blog",     "destination": "/index.html" },
     {
-      "source": "/((?!assets|.*\\.(?:svg|js|css|map|webmanifest|ico|png|jpg|woff2?)).*)",
+      "source": "/((?!assets|sitemap.xml|robots.txt|sw.js|og.png|og.svg|.*\\.(?:svg|js|css|map|webmanifest|ico|png|jpg|woff2?)).*)",
       "destination": "/index.html"
     }
   ],
@@ -14,6 +19,20 @@
       "source": "/sw.js",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/sitemap.xml",
+      "headers": [
+        { "key": "Content-Type", "value": "application/xml; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/robots.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" },
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
       ]
     },
     {

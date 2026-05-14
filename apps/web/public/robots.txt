@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# Sitemap is hosted at the root so Google + Bing can crawl all the routes
+# DropBeam exposes via Vercel rewrites (the SPA serves a custom title +
+# description per path).
+Sitemap: /sitemap.xml

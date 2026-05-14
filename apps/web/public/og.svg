@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!-- Background: cream paper with subtle dot grid -->
+  <rect width="1200" height="630" fill="#FBF5E5"/>
+  <defs>
+    <pattern id="dots" x="0" y="0" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="rgba(10,10,10,0.06)"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="url(#dots)"/>
+
+  <!-- Brand mark (pixel-block down-arrow) -->
+  <g transform="translate(72 72) scale(5)" shape-rendering="crispEdges">
+    <rect x="0" y="0" width="56" height="56" fill="#FCE43B" stroke="#0A0A0A" stroke-width="3.5"/>
+    <g transform="translate(8 8)" fill="#0A0A0A">
+      <rect x="15" y="5" width="10" height="5"/>
+      <rect x="15" y="10" width="10" height="5"/>
+      <rect x="15" y="15" width="10" height="5"/>
+      <rect x="7.5" y="20" width="25" height="5"/>
+      <rect x="12.5" y="25" width="15" height="5"/>
+      <rect x="17.5" y="30" width="5" height="5"/>
+    </g>
+  </g>
+
+  <!-- DropBeam wordmark -->
+  <text x="468" y="172" font-family="Inter, sans-serif" font-weight="900" font-size="92" fill="#0A0A0A" letter-spacing="-3">DropBeam</text>
+
+  <!-- Yellow sticker tagline -->
+  <g transform="rotate(-1.2 100 290)">
+    <rect x="72" y="270" rx="10" ry="10" width="640" height="76" fill="#FCE43B" stroke="#0A0A0A" stroke-width="4"/>
+    <rect x="77" y="275" rx="10" ry="10" width="640" height="76" fill="#FCE43B" stroke="#0A0A0A" stroke-width="4" opacity="0"/>
+    <text x="92" y="322" font-family="Inter, sans-serif" font-weight="900" font-size="44" fill="#0A0A0A" letter-spacing="-1.5">any size · any device · no cloud</text>
+  </g>
+
+  <!-- Headline -->
+  <text x="72" y="430" font-family="Inter, sans-serif" font-weight="900" font-size="68" fill="#0A0A0A" letter-spacing="-2.5">
+    Send anything to any device.
+  </text>
+
+  <!-- Subhead -->
+  <text x="72" y="486" font-family="Inter, sans-serif" font-weight="600" font-size="28" fill="#2C2A26">
+    Free peer-to-peer file transfer. 50 GB+ files, end-to-end encrypted, no upload servers.
+  </text>
+
+  <!-- Feature tag stickers along the bottom -->
+  <g transform="translate(72 540)">
+    <g transform="rotate(-1)">
+      <rect x="0"   y="0" rx="999" ry="999" width="240" height="56" fill="#FCE43B" stroke="#0A0A0A" stroke-width="3"/>
+      <text x="20" y="38" font-family="Inter, sans-serif" font-weight="900" font-size="20" fill="#0A0A0A">📦 ANY SIZE · 50 GB+</text>
+    </g>
+    <g transform="translate(260 0) rotate(0.8)">
+      <rect x="0" y="0" rx="999" ry="999" width="280" height="56" fill="#7BE0B5" stroke="#0A0A0A" stroke-width="3"/>
+      <text x="18" y="38" font-family="Inter, sans-serif" font-weight="900" font-size="20" fill="#0A0A0A">🔒 END-TO-END ENCRYPTED</text>
+    </g>
+    <g transform="translate(560 0) rotate(-0.6)">
+      <rect x="0" y="0" rx="999" ry="999" width="280" height="56" fill="#FF8FB0" stroke="#0A0A0A" stroke-width="3"/>
+      <text x="18" y="38" font-family="Inter, sans-serif" font-weight="900" font-size="20" fill="#0A0A0A">📡 OFFLINE LAN MODE</text>
+    </g>
+    <g transform="translate(860 0) rotate(1)">
+      <rect x="0" y="0" rx="999" ry="999" width="200" height="56" fill="#C9B6FF" stroke="#0A0A0A" stroke-width="3"/>
+      <text x="18" y="38" font-family="Inter, sans-serif" font-weight="900" font-size="20" fill="#0A0A0A">🎯 BULK SHARE</text>
+    </g>
+  </g>
+</svg>
