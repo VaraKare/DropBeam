@@ -1182,6 +1182,13 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hidePopover();
+  // Info buttons are <span role="button"> (because they're nested inside other
+  // buttons, where button-in-button is invalid HTML). Wire Enter/Space to fire
+  // the same click handler.
+  if ((e.key === "Enter" || e.key === " ") && (e.target as HTMLElement)?.classList.contains("info-btn")) {
+    e.preventDefault();
+    (e.target as HTMLElement).click();
+  }
 });
 window.addEventListener("resize", hidePopover);
 window.addEventListener("scroll", hidePopover, { passive: true });

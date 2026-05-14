@@ -158,7 +158,7 @@
               </svg>
             </span>
             <span class="mode-text">
-              <span class="mode-title">Same Wi-Fi <button class="info-btn" type="button" data-info="lan" aria-label="What is Same Wi-Fi mode?">i</button></span>
+              <span class="mode-title">Same Wi-Fi <span class="info-btn" role="button" tabindex="0" data-info="lan" aria-label="What is Same Wi-Fi mode?"></span></span>
               <span class="mode-sub">Works without internet</span>
             </span>
           </button>
@@ -170,7 +170,7 @@
               </svg>
             </span>
             <span class="mode-text">
-              <span class="mode-title">Anywhere <button class="info-btn" type="button" data-info="net" aria-label="What is Anywhere mode?">i</button></span>
+              <span class="mode-title">Anywhere <span class="info-btn" role="button" tabindex="0" data-info="net" aria-label="What is Anywhere mode?"></span></span>
               <span class="mode-sub">Across the internet</span>
             </span>
           </button>
@@ -264,7 +264,7 @@
             <summary>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 1a5 5 0 0 0-5 5v3H6a3 3 0 0 0-3 3v9a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-9a3 3 0 0 0-3-3h-1V6a5 5 0 0 0-5-5Zm-3 5a3 3 0 1 1 6 0v3H9V6Z" fill="currentColor"/></svg>
               Optional: encrypt with a passphrase (AES-GCM-256)
-              <button class="info-btn" type="button" data-info="passphrase" aria-label="What does the passphrase do?">i</button>
+              <span class="info-btn" role="button" tabindex="0" data-info="passphrase" aria-label="What does the passphrase do?"></span>
             </summary>
             <input id="send-pass" type="password" placeholder="Shared passphrase the receiver will know" autocomplete="off" />
           </details>
@@ -347,7 +347,7 @@
         </div>
 
         <div class="field">
-          <label>Save downloads to <button class="info-btn" type="button" data-info="folder" aria-label="Why pick a folder?">i</button></label>
+          <label>Save downloads to <span class="info-btn" role="button" tabindex="0" data-info="folder" aria-label="Why pick a folder?"></span></label>
           <div class="folder-row">
             <button id="recv-pickdir" class="secondary" type="button">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -395,7 +395,7 @@
             <div id="transport-pill" class="pill pill-faint">
               <span class="pill-dot"></span>
               <span id="transport-label">Handshaking…</span>
-              <button class="info-btn info-btn-light" type="button" data-info="transport" aria-label="What does this transport mean?">i</button>
+              <span class="info-btn info-btn-light" role="button" tabindex="0" data-info="transport" aria-label="What does this transport mean?"></span>
             </div>
           </div>
           <div class="link-end">
