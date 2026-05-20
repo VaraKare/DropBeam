@@ -20,3 +20,5 @@ bun.lockb
 tmp/
 testdata/received/
 testdata/sent/
+.claude/
+graphify-out/

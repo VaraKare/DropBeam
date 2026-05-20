@@ -183,6 +183,42 @@ bun test apps/signaling           # signaling server (room codes, rate limiting,
 
 ---
 
+## Deploy web + signaling
+
+### Signaling on Northflank
+
+Use `apps/signaling/Dockerfile` as the Dockerfile path and `/` as the build
+context. The container listens on `PORT` and exposes `/healthz`, so configure
+the Northflank health check to hit:
+
+```text
+GET /healthz
+```
+
+The WebSocket endpoint is:
+
+```text
+wss://<your-northflank-domain>/ws
+```
+
+### Web frontend on Vercel
+
+The root `vercel.json` deploys `apps/web` as a Vite app:
+
+```text
+Install Command: bun install --frozen-lockfile
+Build Command:   bun run --cwd apps/web build
+Output Dir:      apps/web/dist
+```
+
+Set this Vercel environment variable before production deploys:
+
+```text
+VITE_SIGNALING_URL=wss://<your-northflank-domain>/ws
+```
+
+---
+
 ## Build native components (optional)
 
 ### WASM crypto core

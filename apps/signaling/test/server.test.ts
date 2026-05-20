@@ -5,6 +5,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createServer } from "node:net";
 import type {
   DeviceInfo,
   RoomCreatedMsg,
@@ -12,21 +13,35 @@ import type {
   ServerToClientMsg,
 } from "../../../packages/protocol/src/index.ts";
 
-const PORT = 18787 + Math.floor(Math.random() * 100);
-process.env.PORT = String(PORT);
-
-let serverModule: { server: { stop(): void } };
+let serverModule: { server: { stop(): void; port?: number } };
+let url: string;
 
 beforeAll(async () => {
+  process.env.PORT = String(await getFreePort());
   serverModule = await import("../src/server.ts");
+  if (!serverModule.server.port) throw new Error("test server did not expose a port");
+  url = `ws://localhost:${serverModule.server.port}/ws`;
   await new Promise((r) => setTimeout(r, 50));
 });
 
 afterAll(() => {
-  serverModule.server.stop();
+  serverModule?.server.stop();
 });
 
-const URL = `ws://localhost:${PORT}/ws`;
+function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("no test port assigned")));
+        return;
+      }
+      server.close(() => resolve(address.port));
+    });
+  });
+}
 
 function client(): {
   ws: WebSocket;
@@ -35,7 +50,7 @@ function client(): {
   send: (m: object) => void;
   close: () => void;
 } {
-  const ws = new WebSocket(URL);
+  const ws = new WebSocket(url);
   const queue: ServerToClientMsg[] = [];
   const waiters: Array<(m: ServerToClientMsg) => boolean> = [];
   ws.addEventListener("message", (ev) => {
@@ -86,7 +101,7 @@ const device: DeviceInfo = {
 
 describe("signaling server", () => {
   test("health endpoint responds", async () => {
-    const r = await fetch(`http://localhost:${PORT}/healthz`);
+    const r = await fetch(`http://localhost:${serverModule.server.port}/healthz`);
     expect(r.ok).toBe(true);
     const j = (await r.json()) as { ok: boolean };
     expect(j.ok).toBe(true);

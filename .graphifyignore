@@ -1,0 +1,39 @@
+# graphifyignore — focus graphify on the web stack only
+# We are building the web UI; exclude everything else
+
+# Out-of-scope platform apps
+apps/ios/
+apps/android/
+apps/desktop/
+apps/cli/
+apps/quic-relay/
+
+# Build outputs & generated files
+graphify-out/
+dist/
+build/
+target/
+*.wasm
+packages/transfer-core/pkg/
+
+# Lock files & package manager noise
+bun.lock
+package-lock.json
+yarn.lock
+*.lock
+
+# Temp & test artifacts
+tmp/
+scripts/
+
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
+*.cert
+
+# IDE & OS
+.DS_Store
+.vscode/
+.idea/

@@ -100,7 +100,7 @@ function jsonSend(
   ws.send(JSON.stringify(msg));
 }
 
-const server = Bun.serve<SocketData, {}>({
+const server = Bun.serve<SocketData>({
   hostname: HOST,
   port: PORT,
   async fetch(req, srv) {
@@ -190,7 +190,7 @@ if (WEB_ROOT) {
 
 // ─── handlers ─────────────────────────────────────────────────────────────
 
-type WS = Parameters<NonNullable<Parameters<typeof Bun.serve<SocketData, {}>>[0]["websocket"]>["message"]>[0];
+type WS = Parameters<NonNullable<Parameters<typeof Bun.serve<SocketData>>[0]["websocket"]>["message"]>[0];
 
 function handle(ws: WS, msg: ClientToServerMsg): void {
   switch (msg.type) {
