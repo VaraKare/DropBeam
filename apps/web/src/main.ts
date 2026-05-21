@@ -49,9 +49,14 @@ function detectEnv(): AppEnv {
       ? `${wsProto}://${location.host}/ws`
       : `ws://${host || "localhost"}:8787/ws`);
 
-  const iceServers: RTCIceServer[] = sameOrigin
-    ? [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] // Safari needs STUN even locally to resolve mDNS
-    : [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+  const iceServers: RTCIceServer[] = [
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+    { 
+      urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443"], 
+      username: "openrelayproject", 
+      credential: "openrelayproject" 
+    }
+  ];
 
   return {
     signalingUrl,
