@@ -24,9 +24,11 @@ ENV PORT=8787
 # Copy node_modules + source.
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/package.json ./package.json
-COPY --from=deps /app/bun.lock ./bun.lock
 COPY packages/protocol ./packages/protocol
 COPY apps/signaling ./apps/signaling
+
+# Manually link the workspace package so Bun can find it without a lockfile
+RUN mkdir -p node_modules/@dropbeam && ln -s /app/packages/protocol node_modules/@dropbeam/protocol
 
 # Drop privileges.
 USER bun
