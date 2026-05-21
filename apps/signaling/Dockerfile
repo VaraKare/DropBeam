@@ -1,7 +1,7 @@
 # DropBeam signaling server — production container.
 # Works on Render, Fly.io, Railway, Cloud Run, and any Docker host.
 
-FROM oven/bun:1.1-alpine AS deps
+FROM oven/bun:1-alpine AS deps
 WORKDIR /app
 
 # Copy workspace manifests first for cache-friendly installs.
@@ -10,10 +10,10 @@ COPY packages/protocol/package.json ./packages/protocol/
 COPY apps/signaling/package.json ./apps/signaling/
 
 # Install only what's needed (protocol is the signaling server's only dep).
-RUN bun install --frozen-lockfile --production
+RUN rm bun.lock && bun install --production
 
 # ─── runtime stage ───
-FROM oven/bun:1.1-alpine AS runner
+FROM oven/bun:1-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
