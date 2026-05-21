@@ -595,6 +595,23 @@ body {
 .filelist .file-status.ok { color: var(--ok); }
 .filelist .file-status.err { color: var(--err); }
 
+.filelist .remove-btn {
+  background: transparent;
+  color: var(--ink-soft);
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px;
+  margin-left: 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s, color 0.1s;
+}
+.filelist .remove-btn:hover {
+  background: rgba(0,0,0,0.05);
+  color: var(--err);
+}
+
 .totals {
   font-size: 13px;
   color: var(--ink-soft);

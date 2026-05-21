@@ -82,7 +82,7 @@ export function decideRoute(probe: NetworkProbe, hint: ModeHint = {}): RouteDeci
       return {
         transport: "lan",
         lanes: bulk ? 8 : 4,
-        chunkSize: bulk ? 128 * KB : 64 * KB,
+        chunkSize: 16 * KB, // Safari WebRTC max message size is often 16KB-64KB
         appLayerEncryption: hint.preferred === "vault",
         rationale: "same LAN, QUIC unavailable → WebRTC LAN",
       };
@@ -91,7 +91,7 @@ export function decideRoute(probe: NetworkProbe, hint: ModeHint = {}): RouteDeci
       return {
         transport: "wifi-direct",
         lanes: 2,
-        chunkSize: 64 * KB,
+        chunkSize: 16 * KB,
         appLayerEncryption: hint.preferred === "vault",
         rationale: "nearby no-LAN — wifi direct handshake",
       };
@@ -102,7 +102,7 @@ export function decideRoute(probe: NetworkProbe, hint: ModeHint = {}): RouteDeci
     return {
       transport: "p2p-direct",
       lanes: bulk ? 6 : 4,
-      chunkSize: bulk ? 128 * KB : 64 * KB,
+      chunkSize: 16 * KB,
       appLayerEncryption: hint.preferred === "vault",
       rationale: "WebRTC P2P direct via ICE",
     };
@@ -111,7 +111,7 @@ export function decideRoute(probe: NetworkProbe, hint: ModeHint = {}): RouteDeci
   return {
     transport: "p2p-relayed",
     lanes: bulk ? 4 : 2,
-    chunkSize: 64 * KB,
+    chunkSize: 16 * KB,
     appLayerEncryption: hint.preferred === "vault" || true /* relay is a third party */,
     rationale: "TURN relay (NAT/firewall) — application encryption recommended",
   };

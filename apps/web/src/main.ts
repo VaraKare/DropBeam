@@ -50,7 +50,7 @@ function detectEnv(): AppEnv {
       : `ws://${host || "localhost"}:8787/ws`);
 
   const iceServers: RTCIceServer[] = sameOrigin
-    ? [] // No STUN for LAN mode — host candidates only.
+    ? [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }] // Safari needs STUN even locally to resolve mDNS
     : [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
 
   return {
@@ -138,6 +138,14 @@ function goto(stage: Stage, push = true): void {
   stages[stage].classList.add("active");
   if (push) history.push(stage);
   window.scrollTo({ top: 0, behavior: "smooth" });
+
+  if (stage === "idle") {
+    setPickedFiles([]);
+    if (sendFilesInput) sendFilesInput.value = "";
+    if (recvCodeInput) recvCodeInput.value = "";
+    updateRecvButton();
+    history = ["idle"]; // Reset history stack
+  }
 }
 
 function back(): void {
@@ -230,7 +238,11 @@ sendFilesInput.addEventListener("change", () => {
 
 function setPickedFiles(files: File[]): void {
   pickedFiles = files;
-  renderFilelist(sendFilelist, files);
+  renderFilelist(sendFilelist, files, (idx) => {
+    const next = [...pickedFiles];
+    next.splice(idx, 1);
+    setPickedFiles(next);
+  });
   const total = files.reduce((s, f) => s + f.size, 0);
   if (files.length) {
     sendTotals.classList.remove("hidden");
@@ -705,9 +717,9 @@ function renderActiveFilelist(files: { fileId: number; name: string; size: numbe
   }
 }
 
-function renderFilelist(ul: HTMLUListElement, files: File[]): void {
+function renderFilelist(ul: HTMLUListElement, files: File[], onRemove?: (idx: number) => void): void {
   ul.innerHTML = "";
-  for (const f of files) {
+  files.forEach((f, idx) => {
     const li = document.createElement("li");
     const icon = document.createElement("span");
     icon.className = "file-icon";
@@ -719,8 +731,20 @@ function renderFilelist(ul: HTMLUListElement, files: File[]): void {
     size.className = "file-size";
     size.textContent = humanBytes(f.size);
     li.append(icon, name, size);
+    
+    if (onRemove) {
+      const rm = document.createElement("button");
+      rm.className = "remove-btn";
+      rm.innerHTML = "&times;";
+      rm.onclick = (e) => {
+        e.preventDefault();
+        onRemove(idx);
+      };
+      li.appendChild(rm);
+    }
+    
     ul.appendChild(li);
-  }
+  });
 }
 
 function fileIconFor(name: string, mime?: string): string {
@@ -814,15 +838,14 @@ function setTransport(kind: "handshaking" | "lan" | "p2p" | "relayed"): void {
 const doneTitle = $<HTMLElement>("#done-title");
 const doneSub = $<HTMLElement>("#done-sub");
 const doneAgain = $<HTMLButtonElement>("#done-again");
+const sendBackBtn = $<HTMLButtonElement>("#send-back");
+
+sendBackBtn.addEventListener("click", () => {
+  goto("idle", false);
+});
 
 doneAgain.addEventListener("click", () => {
-  pickedFiles = [];
-  setPickedFiles([]);
-  sendFilesInput.value = "";
-  recvCodeInput.value = "";
-  updateRecvButton();
-  history = ["idle"];
-  goto("idle", false);
+  goto("idle");
 });
 
 function onTransferDone(subtitle: string): void {
