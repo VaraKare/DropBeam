@@ -4,9 +4,6 @@
   "workspaces": {
     "": {
       "name": "dropbeam",
-      "dependencies": {
-        "node-datachannel": "^0.32.2",
-      },
       "devDependencies": {
         "@types/bun": "latest",
         "@types/node": "^22.0.0",
@@ -22,6 +19,7 @@
       "dependencies": {
         "@dropbeam/protocol": "workspace:*",
         "@dropbeam/transfer": "workspace:*",
+        "node-datachannel": "^0.32.2",
         "werift": "^0.20.0",
         "ws": "^8.18.0",
       },

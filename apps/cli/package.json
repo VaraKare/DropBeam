@@ -16,7 +16,8 @@
     "@dropbeam/protocol": "workspace:*",
     "@dropbeam/transfer": "workspace:*",
     "werift": "^0.20.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "node-datachannel": "^0.32.2"
   },
   "devDependencies": {
     "@types/ws": "^8.5.10"

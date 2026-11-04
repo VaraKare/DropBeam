@@ -1,383 +1,120 @@
 # Deploying DropBeam to production
 
-DropBeam has two pieces of infrastructure that need to run somewhere:
-
-1. **The web app** (`apps/web/`) — a static Vite bundle. Loads in the
-   browser, owns all the file-transfer logic.
-2. **The signaling server** (`apps/signaling/`) — a Bun WebSocket server
-   that introduces two peers to each other. Never sees file content,
-   but must stay running for the duration of every transfer.
-
-Vercel is perfect for the first one. **Vercel cannot host the second
-one** — their serverless functions are HTTP-only and short-lived,
-and the platform has no long-running WebSocket runtime.
-
-So the production setup is:
+DropBeam has two deployable pieces:
 
 ```
-   ┌──────────────────────┐       ┌──────────────────────┐
-   │  apps/web (static)   │       │  apps/signaling      │
-   │  → Vercel            │  ws   │  → Fly.io / Railway  │
-   │  https://...vercel   │ ───▶  │  wss://...fly.dev/ws │
-   └──────────────────────┘       └──────────────────────┘
+  Browser A ──── https ────▶  Vercel (static web app, apps/web)
+      │
+      └──── wss ───────────▶  Signaling server (Bun WebSocket, apps/signaling)
+                               on Koyeb / Render / Fly — NOT Vercel
+  Browser A ◀══ WebRTC P2P (files) ══▶ Browser B
 ```
 
-Two separate deploys; the web app talks to the signaling host over
-a single WebSocket. **Both are free at our usage tier.**
+Vercel can't host the signaling server: it needs a long-lived WebSocket,
+which Vercel / Netlify / Cloudflare Pages functions don't support. **Deploy
+signaling first**, then point the web app at it.
 
 ---
 
-## Part 1 — Deploy the web app to Vercel
+## Step 1 — Deploy the signaling server
 
-### 1a. Set up `vercel.json`
+The repo ships `apps/signaling/Dockerfile` (build context = repo root) and a
+`render.yaml` blueprint. Any Docker host works.
 
-I've added one at `apps/web/vercel.json` (see "Vercel project config"
-section below). It tells Vercel how to build the Vite app and which
-SPA-fallback rewrites to apply.
+### Option A — Koyeb (free, doesn't sleep)
 
-### 1b. Connect the repo
+1. <https://app.koyeb.com> → **Create Service** → **GitHub** → this repo, branch `main`.
+2. Builder **Dockerfile**, location `apps/signaling/Dockerfile`, build context `.` (repo root).
+3. Port **8787**, protocol HTTP, public. Health check: HTTP `/healthz` on 8787.
+4. Free plan, Nano instance → **Deploy** (~4 min).
+5. WebSocket URL: `wss://<service>.koyeb.app/ws`.
 
-```bash
-# install once
-npm i -g vercel
+### Option B — Render (free, sleeps after 15 min idle)
 
-# from the repo root
-vercel link
-```
+1. <https://dashboard.render.com> → **New → Blueprint** → pick this repo → **Apply**.
+2. WebSocket URL: `wss://<service>.onrender.com/ws`.
+3. Free instances sleep when idle, and the first connection after that takes
+   ~30–60 s. Add a free <https://uptimerobot.com> HTTP monitor on
+   `https://<service>.onrender.com/healthz` every 5 min to keep it warm.
 
-Pick:
-- **Set up and deploy?** → Yes
-- **Scope** → your personal account
-- **Link to existing project?** → No
-- **Project name** → `dropbeam` (or whatever)
-- **Code directory** → `./apps/web`
-- **Override settings?** → No (the `vercel.json` will be picked up)
-
-That records a `.vercel/` folder locally.
-
-### 1c. Or do it from the dashboard (easier)
-
-1. Go to <https://vercel.com/new>.
-2. Import the `VaraKare/DropBeam` repo.
-3. **Framework Preset:** Vite.
-4. **Root Directory:** `apps/web`.
-5. **Build Command:** leave Vercel's default (`vite build`) or set to
-   `bun install --cwd ../.. && bun --cwd ../.. run build:web`.
-6. **Output Directory:** `dist`.
-7. **Install Command:** `bun install` (Vercel detects `bun.lock`).
-8. **Environment Variables:** add `VITE_SIGNALING_URL` →
-   `wss://your-signaling-host.fly.dev/ws` (you'll fill this in after
-   Part 2 below; you can redeploy to update it).
-
-Click **Deploy**. ~30 seconds later you have an HTTPS URL.
-
-### 1d. Custom domain
-
-Vercel project → Settings → Domains. Add your domain (e.g.
-`dropbeam.example.com`) and add the CNAME they show you to your DNS.
-
----
-
-## Part 2 — Deploy the signaling server
-
-Three paths, all valid. **Pick Koyeb first** (free, no sleep, dashboard-only).
-If you've burned your Render free slot or want CLI control, the alternatives
-follow.
-
-### Path A — Koyeb (recommended: free, no sleep, dashboard)
-
-Free tier: one always-on web service with 512 MB RAM, custom HTTPS+WSS
-hostname, auto-deploy from GitHub. **No sleep, no card.**
-
-1. Sign up at <https://app.koyeb.com> (GitHub OAuth — fastest).
-2. Click **Create Service** → pick **GitHub** as source.
-3. Select the `VaraKare/DropBeam` repo, branch **main**.
-4. **Build & deployment**:
-   - Builder: **Dockerfile**
-   - Dockerfile location: **`apps/signaling/Dockerfile`**
-   - Build context: **`.`** (the repo root, NOT `apps/signaling/`)
-5. **Service type**: Web Service.
-6. **Ports**: add one — port **8787**, protocol **HTTP**, path **`/`**, public.
-   Koyeb proxies WebSocket over HTTPS automatically; no extra setting needed.
-7. **Health checks**: HTTP, path `/healthz`, port 8787.
-8. **Environment variables**: leave defaults. (Optionally set
-   `ROOM_CAPACITY=8`, `MAX_ROOMS=10000`.)
-9. **Region**: pick the one closest to your users (Frankfurt / Washington /
-   Singapore). Free tier is one region.
-10. **Instance**: **Free** plan, **Nano** instance.
-11. Click **Deploy**. First build takes ~4 min.
-12. You'll get a URL like `https://dropbeam-signaling-<you>.koyeb.app`.
-    The WebSocket endpoint is `wss://dropbeam-signaling-<you>.koyeb.app/ws`.
-13. Sanity check:
-    ```bash
-    curl https://dropbeam-signaling-<you>.koyeb.app/healthz
-    # → {"ok":true,"rooms":0,"uptimeMs":...}
-    ```
-
-That's it. No keep-alive ping needed — Koyeb free instances don't sleep.
-
-### Path B — Render (only if you have a free slot)
-
-Render Free is capped at **one** free web service per account. If you've
-already used yours on something else, Render will ask you to upgrade — go
-back to Path A (Koyeb). If your free slot is available, the repo ships
-`render.yaml` for one-click Blueprint deploy.
-
-1. <https://dashboard.render.com> → **New → Blueprint** → pick the repo
-   → **Apply**.
-2. Wait ~3 min for the build.
-3. Service URL appears at the top; WebSocket is `wss://<that>/ws`.
-4. **Keep-alive (important):** Render Free sleeps after 15 min of idle.
-   Sign up free at <https://uptimerobot.com>, add an HTTP monitor on
-   `<your-url>/healthz` with 5-minute interval. Keeps it warm 24/7.
-
-### Path C — Fly.io (CLI, $5/mo free credit, always-on)
-
-For when you want CLI control and CDN-edge regions. Fly removed the
-always-free tier but gives every account a $5/mo credit that comfortably
-covers a small Bun service.
+### Check it
 
 ```bash
-brew install flyctl
-fly auth login
-```
-
-Add a `fly.toml` at the repo root:
-
-```toml
-app = "dropbeam-signaling"   # change to your unique name
-primary_region = "iad"       # sjc / ams / fra / sin / blr — pick closest
-
-[build]
-  dockerfile = "apps/signaling/Dockerfile"
-
-[env]
-  HOST = "0.0.0.0"
-  PORT = "8080"
-
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = "off"
-  auto_start_machines = true
-  min_machines_running = 1
-```
-
-Then:
-
-```bash
-fly launch --no-deploy
-fly deploy
-# → wss://dropbeam-signaling.fly.dev/ws
-```
-
-### 2a. Install flyctl
-
-```bash
-brew install flyctl       # macOS
-fly auth signup            # creates account if needed
-fly auth login
-```
-
-### 2b. Create a `Dockerfile` for the signaling app
-
-Save this as `apps/signaling/Dockerfile`:
-
-```dockerfile
-FROM oven/bun:1.1-alpine
-WORKDIR /app
-
-# Copy the workspace package files first for cache-friendly installs.
-COPY package.json bun.lock ./
-COPY packages/protocol ./packages/protocol
-COPY apps/signaling/package.json ./apps/signaling/
-
-# Install only production deps for the signaling package.
-RUN bun install --frozen-lockfile --production
-
-# Copy source last so code changes don't bust the install cache.
-COPY apps/signaling ./apps/signaling
-
-EXPOSE 8787
-CMD ["bun", "apps/signaling/src/server.ts"]
-```
-
-### 2c. Create `fly.toml` at the repo root
-
-```toml
-app = "dropbeam-signaling"  # change to your unique name
-primary_region = "iad"      # closest to your users (sjc, ams, fra, sin, etc.)
-
-[build]
-  dockerfile = "apps/signaling/Dockerfile"
-
-[env]
-  HOST = "0.0.0.0"
-  PORT = "8080"
-
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = "off"   # keep alive for long transfers
-  auto_start_machines = true
-  min_machines_running = 1
-```
-
-> **Why `PORT=8080`?** Fly's edge proxy expects internal apps on 8080
-> by default. The signaling server already reads `process.env.PORT`,
-> so this Just Works.
-
-### 2d. Launch
-
-```bash
-fly launch --no-deploy        # creates the app; uses your fly.toml
-fly deploy
-```
-
-You'll get a hostname like `https://dropbeam-signaling.fly.dev`. The
-WebSocket endpoint is `wss://dropbeam-signaling.fly.dev/ws`.
-
-### 2e. Sanity check
-
-```bash
-curl https://dropbeam-signaling.fly.dev/healthz
-# → {"ok":true,"rooms":0,"uptimeMs":...}
-```
-
-### 2f. Wire the Vercel app to it
-
-Back on Vercel → Project Settings → Environment Variables:
-
-| Variable                  | Value                                          |
-|---------------------------|------------------------------------------------|
-| `VITE_SIGNALING_URL`      | `wss://dropbeam-signaling.fly.dev/ws`          |
-
-Hit **Redeploy**. Done. Open the Vercel URL and it'll connect through
-the Fly signaling host.
-
----
-
-## Vercel project config (drop in `apps/web/vercel.json`)
-
-```json
-{
-  "buildCommand": "vite build",
-  "outputDirectory": "dist",
-  "rewrites": [
-    { "source": "/((?!assets|.*\\.(?:svg|js|css|map|webmanifest|ico|png|jpg|woff2?)).*)", "destination": "/index.html" }
-  ],
-  "headers": [
-    {
-      "source": "/sw.js",
-      "headers": [{ "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" }]
-    },
-    {
-      "source": "/assets/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
-    }
-  ]
-}
-```
-
-The rewrites send every non-asset path back to `index.html` so the
-SPA's deep-link routing (`?c=K7-9P3-MX2A`) works after a hard refresh.
-The headers make the service worker always fresh and the hashed assets
-cacheable forever.
-
----
-
-## Other hosting choices for signaling
-
-If you don't want Fly.io, any of these work — they all support
-long-running WebSocket servers:
-
-| Host         | Pros                                        | Notes                                  |
-|--------------|---------------------------------------------|----------------------------------------|
-| **Fly.io**   | Best Bun support; generous free tier        | Recommended above                      |
-| **Railway**  | Easiest UI; one-click deploy from GitHub    | Generates `*.up.railway.app` HTTPS     |
-| **Render**   | Auto-deploy on git push                     | Web service type; free tier sleeps     |
-| **Cloud Run**| Scales to zero; cheap                       | Bun container, set `--port 8787`       |
-| **VPS**      | Total control                               | Caddy / nginx in front for TLS         |
-
-**Do not** try to put signaling on Vercel Functions, Cloudflare
-Pages Functions, or Netlify — none of them support the kind of
-persistent WebSocket connection a signaling server needs.
-
-(Cloudflare Workers + Durable Objects *could* host signaling, but
-it's a significant rewrite — they don't speak the same API.)
-
----
-
-## Optional: TURN server for "Anywhere" mode reliability
-
-Without a TURN server, the public deploy works for ~80 % of users.
-The other 20 % sit behind symmetric NATs (hotel Wi-Fi, corporate
-networks, some mobile carriers) and need TURN to relay bytes.
-
-Free options:
-- **Twilio Network Traversal Service** — pay-as-you-go ($0.40 / GB).
-- **metered.ca** — free 50 GB/month.
-- **Self-hosted coturn** on the same Fly.io machine.
-
-Once you have credentials, update the ICE servers in
-`apps/web/src/main.ts`:
-
-```ts
-const iceServers: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  {
-    urls: "turn:your-turn-host:3478",
-    username: "user",
-    credential: "pass",
-  },
-];
+curl https://<your-signaling-host>/healthz
+# → {"ok":true,"rooms":0,...}
 ```
 
 ---
 
-## Quick deploy checklist
+## Step 2 — Deploy the web app to Vercel
 
-- [ ] `apps/web/vercel.json` added.
-- [ ] Signaling deployed (Koyeb / Render / Fly); `/healthz` returns ok.
-- [ ] Vercel project linked to the GitHub repo, root dir `apps/web`.
-- [ ] `VITE_SIGNALING_URL` set in Vercel to your signaling host's `wss://…/ws`.
-- [ ] First production transfer works on two devices.
+Everything is configured in the **root** `vercel.json` (install with Bun,
+build `apps/web`, serve `apps/web/dist`, SPA rewrites, cache headers).
 
----
+1. <https://vercel.com/new> → import this repo.
+2. **Root Directory: leave it as the repo root** (`./`). Don't set it to
+   `apps/web` — the build needs the workspace packages.
+3. Framework preset: Vite. Leave build/output settings alone (they come from `vercel.json`).
+4. **Environment Variables** (Production + Preview):
 
-## Vercel via CLI (alternative to the dashboard)
+   | Name | Required | Example |
+   |---|---|---|
+   | `VITE_SIGNALING_URL` | **yes** | `wss://<your-signaling-host>/ws` |
+   | `VITE_TURN_URLS` | no | `turn:turn.example.com:3478,turns:turn.example.com:5349` |
+   | `VITE_TURN_USERNAME` | no | from your TURN provider |
+   | `VITE_TURN_CREDENTIAL` | no | from your TURN provider |
 
-If you'd rather not click through Vercel's dashboard, the CLI does the
-same thing in three commands. Useful when you want to script deploys or
-keep both deploys reproducible.
+   `VITE_*` values are baked in **at build time**. After changing them,
+   redeploy.
+5. **Deploy.**
+
+If `VITE_SIGNALING_URL` is missing or uses `ws://`, the deployed page shows a
+red banner explaining what to fix instead of failing silently.
+
+CLI alternative:
 
 ```bash
-# 1. Install + auth (one-time)
-npm i -g vercel
-vercel login           # opens a browser to authenticate
-
-# 2. From the repo root, link the project
-cd apps/web
-vercel link
-#   ? Set up "apps/web"?          Yes
-#   ? Which scope?                <your-personal-account>
-#   ? Link to existing project?   No
-#   ? What's your project's name? dropbeam
-#   ? Code directory?             ./ (already in apps/web)
-#   ? Override settings?          No
-
-# 3. Set the env var pointing at your signaling host
-vercel env add VITE_SIGNALING_URL production
-#   When prompted, paste: wss://<your-signaling-host>/ws
-
-# 4. Deploy to production
+npm i -g vercel && vercel login
+vercel link                                   # from the repo root
+vercel env add VITE_SIGNALING_URL production  # paste wss://…/ws
 vercel deploy --prod
-#   → https://dropbeam-<hash>.vercel.app
 ```
 
-Subsequent deploys are just `vercel deploy --prod` from `apps/web/`. Or
-let Vercel auto-deploy from GitHub pushes (the default when you link the
-GitHub repo from the dashboard).
+---
+
+## Optional — TURN relay for "Anywhere" mode
+
+Without TURN, devices connect directly via STUN, which works on most home
+and mobile networks. Strict NATs (corporate Wi-Fi, some hotels and carriers)
+need a TURN relay. Files are still DTLS-encrypted end to end through it.
+
+Options: Metered.ca (free tier, needs an account), Cloudflare Realtime TURN,
+Twilio NTS, or self-hosted coturn. Put the URLs and credentials in the
+`VITE_TURN_*` variables above and redeploy.
+
+Note: TURN credentials in a static site are visible to anyone who opens
+DevTools. Use a provider that lets you cap usage, or short-lived credentials.
+
+---
+
+## Local / LAN-only mode (no internet needed)
+
+```bash
+bun run lan     # builds the web app and serves it from the signaling server
+```
+
+Open `http://<your-LAN-IP>:8787` on both devices. Same-origin signaling is
+detected automatically, so no env vars are needed.
+
+---
+
+## Deploy checklist
+
+- [ ] Signaling deployed; `/healthz` returns `{"ok":true,…}`.
+- [ ] Vercel project imported with Root Directory = repo root.
+- [ ] `VITE_SIGNALING_URL=wss://…/ws` set, then redeployed.
+- [ ] Open the site: no red banner; header pill says "Internet mode".
+- [ ] Send a file between two devices on different networks.
 
 ---
 

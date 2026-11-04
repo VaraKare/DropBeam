@@ -22,7 +22,13 @@ class MemChannel implements DataChannel {
 
   partner!: MemChannel;
 
-  constructor(label: string) {
+  /**
+   * Simulated network latency for this channel. Bytes leave `bufferedAmount`
+   * immediately (like handing them to SCTP) but reach the partner later, so a
+   * fast channel can overtake a slow one — exactly like real WebRTC, where
+   * separate DataChannels are not ordered relative to each other.
+   */
+  constructor(label: string, private readonly latencyMs = 0) {
     this.label = label;
   }
 
@@ -50,6 +56,15 @@ class MemChannel implements DataChannel {
       size = view.byteLength;
     }
     this.bufferedAmount += size;
+    if (this.latencyMs > 0) {
+      queueMicrotask(() => {
+        this.bufferedAmount -= size;
+        if (this.bufferedAmount <= this.bufferedAmountLowThreshold) this.onbufferedamountlow?.();
+      });
+      // setTimeout with an equal delay preserves FIFO order within the channel.
+      setTimeout(() => this.partner.onmessage?.(payload), this.latencyMs);
+      return;
+    }
     queueMicrotask(() => {
       this.partner.onmessage?.(payload);
       this.bufferedAmount -= size;
@@ -78,9 +93,12 @@ class MemPeerConnection implements PeerConnection {
   partner!: MemPeerConnection;
   private channels: MemChannel[] = [];
 
+  constructor(private readonly dataLaneLatencyMs = 0) {}
+
   createDataChannel(label: string): DataChannel {
-    const local = new MemChannel(label);
-    const remote = new MemChannel(label);
+    const latency = label.startsWith("data-") ? this.dataLaneLatencyMs : 0;
+    const local = new MemChannel(label, latency);
+    const remote = new MemChannel(label, latency);
     local.partner = remote;
     remote.partner = local;
     this.channels.push(local);
@@ -109,12 +127,15 @@ class MemPeerConnection implements PeerConnection {
   }
 }
 
-export function makeInMemoryPair(): {
+export function makeInMemoryPair(opts: {
+  /** Delay data-lane delivery so control messages overtake data (as on real WebRTC). */
+  dataLaneLatencyMs?: number;
+} = {}): {
   a: PeerConnection;
   b: PeerConnection;
 } {
-  const a = new MemPeerConnection();
-  const b = new MemPeerConnection();
+  const a = new MemPeerConnection(opts.dataLaneLatencyMs);
+  const b = new MemPeerConnection(opts.dataLaneLatencyMs);
   a.partner = b;
   b.partner = a;
   return { a, b };

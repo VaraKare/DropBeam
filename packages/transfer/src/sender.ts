@@ -204,8 +204,40 @@ export class TransferSender {
     for (const l of this.lanes) {
       if (l.bufferedAmount > 0) await waitForDrain(l, 0);
     }
+    // Don't report success until the receiver confirms every byte is on disk:
+    // `complete` can overtake in-flight data on the lanes, and tearing the
+    // connection down early would silently truncate the last file(s).
+    const confirmed = this.awaitCompleteAck(transferId);
     this.sendControl({ type: "complete", transferId });
+    await confirmed;
     this.emit({ type: "complete", transferId });
+  }
+
+  private awaitCompleteAck(transferId: string, timeoutMs = 120_000): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.control.onmessage = null;
+        reject(new Error("receiver never confirmed the transfer finished"));
+      }, timeoutMs);
+      this.control.onmessage = (data: string | ArrayBuffer) => {
+        if (typeof data !== "string") return;
+        try {
+          const m = JSON.parse(data) as ControlMsg;
+          if (m.transferId !== transferId) return;
+          if (m.type === "complete-ack") {
+            clearTimeout(timer);
+            this.control.onmessage = null;
+            resolve();
+          } else if (m.type === "abort") {
+            clearTimeout(timer);
+            this.control.onmessage = null;
+            reject(new Error(`receiver aborted: ${m.reason}`));
+          }
+        } catch {
+          /* ignore non-json control noise */
+        }
+      };
+    });
   }
 
   private sendControl(m: ControlMsg): void {

@@ -24,15 +24,50 @@ type ConnectionMode = "lan" | "net";
 
 interface AppEnv {
   signalingUrl: string;
+  /** Human-readable reason the app can't connect, or null when configured. */
+  configError: string | null;
+  /** ICE servers used in "Anywhere" mode (STUN + optional TURN from env). */
+  netIceServers: RTCIceServer[];
+  /** ICE servers for the current mode ([] in LAN mode → host candidates only). */
   iceServers: RTCIceServer[];
+  /** True when a TURN relay is configured. */
+  hasTurn: boolean;
   /** True when the page is being served from a same-origin signaling host (LAN-only deployment). */
   sameOrigin: boolean;
   /** Best-guess current mode. */
   mode: ConnectionMode;
 }
 
+function readIceServers(): { servers: RTCIceServer[]; hasTurn: boolean } {
+  const servers: RTCIceServer[] = [
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] },
+  ];
+  const turnUrls = (import.meta.env.VITE_TURN_URLS ?? "")
+    .split(",")
+    .map((u) => u.trim())
+    .filter(Boolean);
+  if (turnUrls.length) {
+    servers.push({
+      urls: turnUrls,
+      username: import.meta.env.VITE_TURN_USERNAME ?? "",
+      credential: import.meta.env.VITE_TURN_CREDENTIAL ?? "",
+    });
+  }
+  return { servers, hasTurn: turnUrls.length > 0 };
+}
+
+/** Accepts ws(s):// as-is and rewrites http(s):// → ws(s)://; appends /ws if no path given. */
+function normalizeSignalingUrl(raw: string): string {
+  const u = new URL(raw.trim());
+  if (u.protocol === "https:") u.protocol = "wss:";
+  else if (u.protocol === "http:") u.protocol = "ws:";
+  if (u.protocol !== "ws:" && u.protocol !== "wss:") throw new Error(`unsupported protocol ${u.protocol}`);
+  if (u.pathname === "/" || u.pathname === "") u.pathname = "/ws";
+  return u.toString();
+}
+
 function detectEnv(): AppEnv {
-  const override = (import.meta.env.VITE_SIGNALING_URL as string | undefined) ?? null;
+  const override = import.meta.env.VITE_SIGNALING_URL?.trim() || null;
   const host = location.hostname;
   const isPrivateHost =
     host === "localhost" ||
@@ -44,23 +79,32 @@ function detectEnv(): AppEnv {
 
   const sameOrigin = !override && isPrivateHost;
   const wsProto = location.protocol === "https:" ? "wss" : "ws";
-  const signalingUrl = override
-    ?? (sameOrigin
-      ? `${wsProto}://${location.host}/ws`
-      : `ws://${host || "localhost"}:8787/ws`);
+  let signalingUrl = "";
+  let configError: string | null = null;
 
-  const iceServers: RTCIceServer[] = [
-    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-    { 
-      urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443"], 
-      username: "openrelayproject", 
-      credential: "openrelayproject" 
+  if (override) {
+    try {
+      signalingUrl = normalizeSignalingUrl(override);
+      if (location.protocol === "https:" && signalingUrl.startsWith("ws://")) {
+        configError = `VITE_SIGNALING_URL is ${signalingUrl}, but this page is served over HTTPS, so the browser will block it. Use a wss:// URL.`;
+      }
+    } catch {
+      configError = `VITE_SIGNALING_URL ("${override}") isn't a valid ws:// or wss:// URL.`;
     }
-  ];
+  } else if (sameOrigin) {
+    signalingUrl = `${wsProto}://${location.host}/ws`;
+  } else {
+    configError =
+      "This deployment has no signaling server configured. Set VITE_SIGNALING_URL (e.g. wss://your-signaling.onrender.com/ws) in your hosting provider's environment variables and redeploy.";
+  }
 
+  const { servers, hasTurn } = readIceServers();
   return {
     signalingUrl,
-    iceServers,
+    configError,
+    netIceServers: servers,
+    iceServers: servers,
+    hasTurn,
     sameOrigin,
     mode: sameOrigin ? "lan" : "net",
   };
@@ -156,8 +200,10 @@ function goto(stage: Stage, push = true): void {
 function back(): void {
   cancelActive();
   history.pop();
-  const prev = history.pop() ?? "idle";
-  goto(prev);
+  // Never "go back" into a live-session screen — its session is gone now.
+  let prev: Stage | undefined;
+  do { prev = history.pop(); } while (prev === "send-share" || prev === "active" || prev === "done");
+  goto(prev ?? "idle");
 }
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-back]")) {
@@ -170,8 +216,18 @@ const sigUrlEl = $<HTMLElement>("#sig-url");
 const connPill = $<HTMLElement>("#conn-pill");
 const connPillLabel = $<HTMLElement>("#conn-pill-label");
 
+const configBanner = $<HTMLElement>("#config-banner");
+
 function refreshConnPill(): void {
-  sigUrlEl.textContent = env.signalingUrl;
+  sigUrlEl.textContent = env.signalingUrl || "not configured";
+  if (env.configError) {
+    configBanner.textContent = env.configError;
+    configBanner.classList.remove("hidden");
+    connPill.classList.remove("pill-muted", "pill-net", "pill-lan");
+    connPill.classList.add("pill-warn");
+    connPillLabel.textContent = "Not configured";
+    return;
+  }
   connPill.classList.remove("pill-muted", "pill-net", "pill-lan");
   if (env.mode === "lan") {
     connPill.classList.add("pill-lan");
@@ -189,16 +245,9 @@ const modeLan = $<HTMLButtonElement>("#mode-lan");
 const modeNet = $<HTMLButtonElement>("#mode-net");
 
 function setMode(m: ConnectionMode, persist = true): void {
-  env = { ...env, mode: m };
-  if (m === "net") {
-    // Switching to internet mode: ensure we have STUN; if the page is on a LAN
-    // host, this still works — we'll just discover external reflexive candidates.
-    if (env.iceServers.length === 0) {
-      env.iceServers = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
-    }
-  } else {
-    env.iceServers = [];
-  }
+  // LAN mode: no STUN/TURN, so only host candidates are gathered and the
+  // connection never leaves the local network. Anywhere mode: STUN + TURN.
+  env = { ...env, mode: m, iceServers: m === "net" ? env.netIceServers : [] };
   modeLan.setAttribute("aria-selected", String(m === "lan"));
   modeNet.setAttribute("aria-selected", String(m === "net"));
   if (persist) localStorage.setItem("dropbeam.mode", m);
@@ -358,9 +407,15 @@ const scannerVideo = $<HTMLVideoElement>("#scanner-video");
 
 let saveDir: FileSystemDirectoryHandle | null = null;
 
-const showDirectoryPicker = (window as unknown as {
-  showDirectoryPicker?: (opts?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
-}).showDirectoryPicker;
+type DirectoryPicker = (opts?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
+
+const showDirectoryPicker: DirectoryPicker | undefined =
+  // Dev-only test hook: `?e2e-opfs` saves into the Origin Private File System
+  // so automated browsers can receive without a native folder dialog.
+  // Dead-code-eliminated from production builds.
+  import.meta.env.DEV && new URLSearchParams(location.search).has("e2e-opfs")
+    ? () => navigator.storage.getDirectory()
+    : (window as unknown as { showDirectoryPicker?: DirectoryPicker }).showDirectoryPicker?.bind(window);
 
 if (!showDirectoryPicker) {
   recvPickDirBtn.disabled = true;
@@ -459,83 +514,295 @@ function extractCodeFromUrl(text: string): string | null {
 
 /* ─────────────── transfer orchestration ─────────────── */
 
-type ActiveSession = {
+/** Rejection reason used when the user backs out — never shown as an error. */
+class Cancelled extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "Cancelled";
+  }
+}
+
+/** How long ICE gets to reach "connected" after the offer/answer exchange. */
+const CONNECT_TIMEOUT_MS = 30_000;
+/** How long the worker gets to open its first DataChannel before we give up. */
+const WORKER_START_TIMEOUT_MS = 15_000;
+
+interface Session {
+  role: "send" | "receive";
   signaling: SignalingClient;
-  host: WorkerTransferHost;
-  pc: RTCPeerConnection;
-  transportPoll: number;
-};
+  pc: RTCPeerConnection | null;
+  host: WorkerTransferHost | null;
+  transportPoll: number | null;
+  /** "setup" until the peer connection is up; "transfer" afterwards. */
+  phase: "setup" | "transfer";
+  /** Rejects as soon as anything fatal happens (cancel, peer left, ICE failed…). */
+  failed: Promise<never>;
+  fail(err: Error): void;
+  cancelled: boolean;
+  tornDown: boolean;
+}
 
-let active: ActiveSession | null = null;
+let session: Session | null = null;
 
-function cancelActive(): void {
-  if (!active) return;
-  try { active.host.abort("user-cancel"); } catch { /* ignore */ }
-  try { active.host.dispose(); } catch { /* ignore */ }
-  try { active.signaling.close(); } catch { /* ignore */ }
-  try { active.pc.close(); } catch { /* ignore */ }
-  clearInterval(active.transportPoll);
-  active = null;
+// Dev-only debugging handle (stripped from production builds).
+if (import.meta.env.DEV) {
+  (window as unknown as { __dropbeam: unknown }).__dropbeam = { get session() { return session; } };
+}
+
+function newSession(role: Session["role"]): Session {
+  if (env.configError) throw new Error(env.configError);
+  const signaling = new SignalingClient({ url: env.signalingUrl, device: DEVICE });
+  let reject!: (e: Error) => void;
+  const failed = new Promise<never>((_, rej) => { reject = rej; });
+  failed.catch(() => { /* observed via race() */ });
+  const s: Session = {
+    role,
+    signaling,
+    pc: null,
+    host: null,
+    transportPoll: null,
+    phase: "setup",
+    failed,
+    fail: (err) => reject(err),
+    cancelled: false,
+    tornDown: false,
+  };
+  // Losing signaling only matters while we still need it for the handshake;
+  // once the DataChannels are up, bytes flow peer-to-peer without it.
+  signaling.onClose((err) => {
+    if (s.phase === "setup") s.fail(err);
+  });
+  return s;
+}
+
+/** Await `p`, but bail out the moment the session fails or is cancelled. */
+function race<T>(s: Session, p: Promise<T>): Promise<T> {
+  return Promise.race([p, s.failed]);
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let t: number | undefined;
+  const timer = new Promise<never>((_, rej) => { t = window.setTimeout(() => rej(new Error(message)), ms); });
+  return Promise.race([p, timer]).finally(() => clearTimeout(t));
+}
+
+function teardown(s: Session, abortTransfer: boolean): void {
+  if (s.tornDown) return;
+  s.tornDown = true;
+  if (abortTransfer) { try { s.host?.abort("user-cancel"); } catch { /* ignore */ } }
+  try { s.host?.dispose(); } catch { /* ignore */ }
+  try { s.signaling.close(); } catch { /* ignore */ }
+  try { s.pc?.close(); } catch { /* ignore */ }
+  if (s.transportPoll !== null) clearInterval(s.transportPoll);
+  if (session === s) session = null;
   releaseWakeLock();
+}
+
+/** User backed out: stop everything and swallow the resulting errors. */
+function cancelActive(): void {
+  const s = session;
+  if (!s) return;
+  s.cancelled = true;
+  s.fail(new Cancelled());
+  teardown(s, true);
+}
+
+/**
+ * Create the RTCPeerConnection for a session and wire trickle ICE.
+ *
+ * Remote ICE candidates that arrive before the remote description is set are
+ * queued and flushed afterwards (adding them early throws InvalidStateError,
+ * which used to silently drop them). All remote signals are processed one at a
+ * time so an answer and its candidates can't race each other.
+ *
+ * Call `start()` only after the WorkerTransferHost exists, so the host is
+ * already listening for DataChannels when the remote description lands.
+ */
+function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; start(): Promise<void> } {
+  const pc = new RTCPeerConnection({ iceServers: env.iceServers });
+  s.pc = pc;
+  const pendingIce: RTCIceCandidateInit[] = [];
+  let chain: Promise<void> = Promise.resolve();
+  let connectTimer: number | undefined;
+
+  // The worker creates the DataChannels asynchronously; the first one fires
+  // `negotiationneeded`, which is the earliest moment an offer will actually
+  // contain the data section. (A fixed delay here was racy on slow devices.)
+  const negotiationNeeded = new Promise<void>((resolve) => {
+    pc.addEventListener("negotiationneeded", () => resolve(), { once: true });
+  });
+
+  pc.addEventListener("icecandidate", (ev) => {
+    if (!ev.candidate || s.signaling.closed) return;
+    try {
+      s.signaling.signal(remotePeerId, { kind: "ice", candidate: ev.candidate.toJSON() });
+    } catch { /* signaling gone; onClose handles it */ }
+  });
+
+  pc.addEventListener("connectionstatechange", () => {
+    const st = pc.connectionState;
+    if (st === "connected") {
+      s.phase = "transfer";
+      clearTimeout(connectTimer);
+      setActiveTitle(s.role === "send" ? "Sending…" : "Receiving…");
+    } else if (st === "failed") {
+      clearTimeout(connectTimer);
+      s.fail(new Error(connectFailureMessage(s.phase)));
+    }
+  });
+
+  s.signaling.on((m) => {
+    if (m.type === "peer-left" && m.peerId === remotePeerId && s.phase === "setup") {
+      s.fail(new Error("The other device left before the transfer started."));
+    }
+  });
+
+  const flushIce = async (): Promise<void> => {
+    while (pendingIce.length) {
+      const c = pendingIce.shift()!;
+      await pc.addIceCandidate(c).catch((err) => console.warn("addIceCandidate failed", err));
+    }
+  };
+
+  const armConnectTimeout = (): void => {
+    connectTimer = window.setTimeout(() => {
+      if (pc.connectionState !== "connected") s.fail(new Error(connectFailureMessage("setup")));
+    }, CONNECT_TIMEOUT_MS);
+  };
+
+  const handleSignal = async (data: unknown): Promise<void> => {
+    const msg = data as
+      | { kind: "sdp"; sdp: RTCSessionDescriptionInit }
+      | { kind: "ice"; candidate: RTCIceCandidateInit };
+    if (msg.kind === "ice") {
+      if (pc.remoteDescription) {
+        await pc.addIceCandidate(msg.candidate).catch((err) => console.warn("addIceCandidate failed", err));
+      } else {
+        pendingIce.push(msg.candidate);
+      }
+      return;
+    }
+    if (msg.kind !== "sdp") return;
+    if (msg.sdp.type === "offer" && s.role === "receive" && !pc.remoteDescription) {
+      await pc.setRemoteDescription(msg.sdp);
+      await flushIce();
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      s.signaling.signal(remotePeerId, { kind: "sdp", sdp: pc.localDescription });
+      armConnectTimeout();
+    } else if (msg.sdp.type === "answer" && s.role === "send" && pc.signalingState === "have-local-offer") {
+      await pc.setRemoteDescription(msg.sdp);
+      await flushIce();
+    }
+  };
+
+  return {
+    pc,
+    async start() {
+      // Subscribing replays anything that arrived early (e.g. the offer).
+      s.signaling.onSignalFrom(remotePeerId, (data) => {
+        chain = chain.then(() => handleSignal(data)).catch((err) => {
+          console.warn("signal handling failed", err);
+          s.fail(new Error("Couldn't complete the connection handshake."));
+        });
+      });
+      if (s.role === "send") {
+        await race(s, withTimeout(negotiationNeeded, WORKER_START_TIMEOUT_MS, "The transfer engine didn't start. Reload the page and try again."));
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        s.signaling.signal(remotePeerId, { kind: "sdp", sdp: pc.localDescription });
+        armConnectTimeout();
+      }
+    },
+  };
+}
+
+function connectFailureMessage(phase: Session["phase"]): string {
+  if (phase === "transfer") return "The connection to the other device dropped.";
+  if (env.mode === "lan") {
+    return "Couldn't connect over the local network. Make sure both devices are on the same Wi-Fi, or switch to “Anywhere” mode.";
+  }
+  return env.hasTurn
+    ? "Couldn't open a connection between the two devices, even through the relay. Check that neither network blocks WebRTC."
+    : "Couldn't open a direct connection — one of the networks blocks peer-to-peer traffic, and this deployment has no TURN relay configured.";
+}
+
+/** Map engine / server error strings to something a person can act on. */
+function friendlyError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/room-not-found/.test(raw)) return "No active transfer uses that code. Check it, or ask the sender for a new one.";
+  if (/room-full/.test(raw)) return "Someone else already joined that transfer.";
+  if (/rate-limited/.test(raw)) return "Too many attempts. Wait a few seconds and try again.";
+  if (/passphrase-required/.test(raw)) return "The sender protected this transfer with a passphrase. Enter it and try again.";
+  if (/OperationError|operation-specific|decrypt/i.test(raw)) return "Wrong passphrase — the files couldn't be decrypted.";
+  if (/sender aborted|user-cancel/.test(raw)) return "The sender cancelled the transfer.";
+  if (/control channel closed/.test(raw)) return "The connection to the other device dropped.";
+  return raw;
+}
+
+function resetActiveUI(peerLabel: string): void {
+  manifestFiles = [];
+  fileStatusEls.clear();
+  activeFilelist.innerHTML = "";
+  progressFill.style.width = "0%";
+  progressHeadline.textContent = "0 B / 0 B";
+  progressRate.textContent = "—";
+  progressEta.textContent = "—";
+  progressFiles.textContent = "—";
+  endPeerName.textContent = peerLabel;
+  endPeerName.classList.add("muted");
+  endPeerGlyph.textContent = "";
+  setTransport("handshaking");
+  setActiveStatus("");
 }
 
 async function startSend(files: File[], passphrase: string | undefined): Promise<void> {
   cancelActive();
+  if (!files.length) return;
   sendCreate.disabled = true;
+  let s: Session;
+  try {
+    s = newSession("send");
+  } catch (err) {
+    sendCreate.disabled = false;
+    onTransferFailed(friendlyError(err));
+    return;
+  }
+  session = s;
   goto("send-share");
   setShareCode("…");
-  setActiveTitle("Creating room…");
-
-  const signaling = new SignalingClient({ url: env.signalingUrl, device: DEVICE });
-  let host: WorkerTransferHost | null = null;
-  let pc: RTCPeerConnection | null = null;
+  waitingText.textContent = "Connecting to the signaling server…";
 
   try {
-    await signaling.ready();
-    const room = await signaling.createRoom();
+    await race(s, s.signaling.ready());
+    const room = await race(s, s.signaling.createRoom());
     setShareCode(room.code);
     waitingText.textContent = "Waiting for the receiver to join…";
 
-    const remotePeerId = await waitForPeerJoined(signaling);
+    const peer = await race(s, waitForPeerJoined(s.signaling));
+    resetActiveUI("Receiver");
+    setPeerName(peer.name);
     goto("active");
-    setActiveTitle("Negotiating…");
-    setPeerName("Receiver");
+    setActiveTitle("Connecting…");
 
-    pc = new RTCPeerConnection({ iceServers: env.iceServers });
-    wireTrickleIce(pc, signaling, remotePeerId);
-
-    host = new WorkerTransferHost({
-      worker: () => new TransferWorker(),
-      peerConnection: pc,
-    });
-
-    const transferPromise = host.send(crypto.randomUUID(), files, {
+    const link = createLink(s, peer.peerId);
+    s.transportPoll = startTransportPoll(link.pc);
+    s.host = new WorkerTransferHost({ worker: () => new TransferWorker(), peerConnection: link.pc });
+    const transfer = s.host.send(crypto.randomUUID(), files, {
       ...(passphrase ? { encryptionPassphrase: passphrase } : {}),
       onEvent: (e) => onTransferEvent(e, files),
     });
-
-    await nextAnimationFrame();
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    signaling.signal(remotePeerId, { kind: "sdp", sdp: pc.localDescription });
-
-    active = { signaling, host, pc, transportPoll: startTransportPoll(pc) };
+    transfer.catch(() => { /* observed via race() */ });
     void acquireWakeLock();
 
-    listenForPeerInfo(signaling);
-
-    await transferPromise;
+    await race(s, link.start());
+    await race(s, transfer);
     onTransferDone("Files delivered.");
   } catch (err) {
-    onTransferFailed((err as Error).message);
+    if (!s.cancelled) onTransferFailed(friendlyError(err));
   } finally {
-    if (host) host.dispose();
-    if (pc) pc.close();
-    signaling.close();
-    if (active) clearInterval(active.transportPoll);
-    active = null;
-    releaseWakeLock();
-    sendCreate.disabled = false;
+    teardown(s, false);
+    sendCreate.disabled = pickedFiles.length === 0;
   }
 }
 
@@ -546,74 +813,69 @@ async function startReceive(
 ): Promise<void> {
   cancelActive();
   recvGoBtn.disabled = true;
+
+  // Pick the destination folder *first*, while we still have the click's user
+  // activation and before we occupy the sender's room.
+  try {
+    if (!dir) dir = await pickSaveDir();
+  } catch (err) {
+    recvGoBtn.disabled = false;
+    if ((err as Error).name === "AbortError") return; // user closed the picker
+    onTransferFailed(friendlyError(err));
+    return;
+  }
+
+  let s: Session;
+  try {
+    s = newSession("receive");
+  } catch (err) {
+    recvGoBtn.disabled = false;
+    onTransferFailed(friendlyError(err));
+    return;
+  }
+  session = s;
+  resetActiveUI("Sender");
   goto("active");
   setActiveTitle("Connecting…");
-  setPeerName("Sender");
-  setActiveStatus("");
 
-  const code = rawCode.toUpperCase();
-  const signaling = new SignalingClient({ url: env.signalingUrl, device: DEVICE });
-  let host: WorkerTransferHost | null = null;
-  let pc: RTCPeerConnection | null = null;
+  const code = rawCode.trim(); // the server normalizes case / dashes / spaces
 
   try {
-    await signaling.ready();
-    const joined = await signaling.joinRoom(code);
+    await race(s, s.signaling.ready());
+    const joined = await race(s, s.signaling.joinRoom(code));
     const remote = joined.peers[0];
-    if (!remote) throw new Error("Sender hasn't created a room yet.");
+    if (!remote) throw new Error("The sender isn't connected any more. Ask them for a new code.");
     setPeerName(remote.device.name);
 
-    pc = new RTCPeerConnection({ iceServers: env.iceServers });
-    wireTrickleIce(pc, signaling, remote.peerId);
-
-    host = new WorkerTransferHost({
-      worker: () => new TransferWorker(),
-      peerConnection: pc,
-    });
-
-    const sink: Parameters<WorkerTransferHost["receive"]>[0] extends infer T ? T : never =
-      dir
-        ? { sink: { kind: "fsaccess" as const, directory: dir }, ...(passphrase ? { encryptionPassphrase: passphrase } : {}) }
-        : { sink: { kind: "fsaccess" as const, directory: await ensureFallbackDir() }, ...(passphrase ? { encryptionPassphrase: passphrase } : {}) };
-
-    const transferPromise = host.receive({
-      ...sink,
+    const link = createLink(s, remote.peerId);
+    s.transportPoll = startTransportPoll(link.pc);
+    s.host = new WorkerTransferHost({ worker: () => new TransferWorker(), peerConnection: link.pc });
+    const transfer = s.host.receive({
+      sink: { kind: "fsaccess", directory: dir },
+      ...(passphrase ? { encryptionPassphrase: passphrase } : {}),
       onEvent: (e) => onTransferEvent(e, []),
     });
-
-    const offer = await waitForSdp(signaling, remote.peerId, "offer");
-    await pc.setRemoteDescription(offer);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    signaling.signal(remote.peerId, { kind: "sdp", sdp: pc.localDescription });
-
-    active = { signaling, host, pc, transportPoll: startTransportPoll(pc) };
+    transfer.catch(() => { /* observed via race() */ });
     void acquireWakeLock();
 
-    await transferPromise;
-    onTransferDone(dir ? `Saved to ${dir.name}` : "Files saved.");
+    await race(s, link.start());
+    await race(s, transfer);
+    onTransferDone(dir.name ? `Saved to “${dir.name}”.` : "Files saved.");
   } catch (err) {
-    onTransferFailed((err as Error).message);
+    if (!s.cancelled) onTransferFailed(friendlyError(err));
   } finally {
-    if (host) host.dispose();
-    if (pc) pc.close();
-    signaling.close();
-    if (active) clearInterval(active.transportPoll);
-    active = null;
-    releaseWakeLock();
-    recvGoBtn.disabled = false;
+    teardown(s, false);
+    updateRecvButton();
   }
 }
 
-async function ensureFallbackDir(): Promise<FileSystemDirectoryHandle> {
+async function pickSaveDir(): Promise<FileSystemDirectoryHandle> {
   if (!showDirectoryPicker) {
-    throw new Error("This browser can't write to disk. Use Chrome, Edge, or pick a folder.");
+    throw new Error("Receiving currently needs Chrome or Edge on a computer (they can save straight to a folder). Support for phones, Safari and Firefox is coming.");
   }
-  setActiveStatus("Pick a folder to save downloads to…");
   saveDir = await showDirectoryPicker({ mode: "readwrite" });
   recvDirName.textContent = saveDir.name;
   recvDirName.classList.remove("muted");
-  setActiveStatus("");
   return saveDir;
 }
 
@@ -664,7 +926,8 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       }));
       fileStatusEls.clear();
       renderActiveFilelist(manifestFiles);
-      setActiveTitle(`Receiving ${e.files.length} file${e.files.length === 1 ? "" : "s"}…`);
+      const verb = session?.role === "send" ? "Sending" : "Receiving";
+      setActiveTitle(`${verb} ${e.files.length} file${e.files.length === 1 ? "" : "s"}…`);
       progressFiles.textContent = `0 / ${e.files.length} files`;
       break;
     }
@@ -693,6 +956,7 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
     }
     case "complete":
       progressFill.style.width = "100%";
+      progressHeadline.textContent = `${humanBytes(manifestFiles.reduce((n, f) => n + f.size, 0))} done`;
       break;
     case "error":
       setActiveStatus(e.error.message, "err");
@@ -843,12 +1107,6 @@ function setTransport(kind: "handshaking" | "lan" | "p2p" | "relayed"): void {
 const doneTitle = $<HTMLElement>("#done-title");
 const doneSub = $<HTMLElement>("#done-sub");
 const doneAgain = $<HTMLButtonElement>("#done-again");
-const sendBackBtn = $<HTMLButtonElement>("#send-back");
-
-sendBackBtn.addEventListener("click", () => {
-  goto("idle", false);
-});
-
 doneAgain.addEventListener("click", () => {
   goto("idle");
 });
@@ -869,64 +1127,16 @@ function onTransferFailed(message: string): void {
 
 /* ─────────────── signaling glue ─────────────── */
 
-function wireTrickleIce(
-  pc: RTCPeerConnection,
-  signaling: SignalingClient,
-  remotePeerId: string,
-): void {
-  pc.addEventListener("icecandidate", (ev) => {
-    if (ev.candidate) {
-      signaling.signal(remotePeerId, { kind: "ice", candidate: ev.candidate.toJSON() });
-    }
-  });
-  signaling.onSignalFrom(remotePeerId, async (data) => {
-    const msg = data as
-      | { kind: "sdp"; sdp: RTCSessionDescriptionInit }
-      | { kind: "ice"; candidate: RTCIceCandidateInit };
-    try {
-      if (msg.kind === "sdp" && msg.sdp.type === "answer" && !pc.remoteDescription) {
-        await pc.setRemoteDescription(msg.sdp);
-      } else if (msg.kind === "ice") {
-        await pc.addIceCandidate(msg.candidate);
-      }
-    } catch (err) {
-      console.warn("signal handling failed", err);
-    }
-  });
-}
-
-function listenForPeerInfo(signaling: SignalingClient): void {
-  signaling.on((m) => {
-    if (m.type === "peer-joined") {
-      setPeerName(m.device.name);
-    }
-  });
-}
-
-function waitForPeerJoined(signaling: SignalingClient): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+function waitForPeerJoined(signaling: SignalingClient): Promise<{ peerId: string; name: string }> {
+  return new Promise((resolve, reject) => {
     const off = signaling.on((m) => {
       if (m.type === "peer-joined") {
-        setPeerName(m.device.name);
         off();
-        resolve(m.peerId);
+        resolve({ peerId: m.peerId, name: m.device.name });
       } else if (m.type === "error") {
         off();
         reject(new Error(`${m.code}: ${m.message}`));
       }
-    });
-  });
-}
-
-function waitForSdp(
-  signaling: SignalingClient,
-  fromPeerId: string,
-  expect: "offer" | "answer",
-): Promise<RTCSessionDescriptionInit> {
-  return new Promise<RTCSessionDescriptionInit>((resolve) => {
-    signaling.onSignalFrom(fromPeerId, (data) => {
-      const msg = data as { kind?: string; sdp?: RTCSessionDescriptionInit };
-      if (msg.kind === "sdp" && msg.sdp?.type === expect) resolve(msg.sdp);
     });
   });
 }
@@ -1008,11 +1218,6 @@ function applyRouteMeta(path: string): void {
   else if (meta?.stage === "legal" && meta.legal) showLegal(meta.legal);
 })();
 
-// Update <title> + meta description whenever the user changes stages so
-// the in-app navigation also produces clean per-route SEO signals when
-// Google's JS-renderer crawls.
-const _originalGoto = goto;
-(window as unknown as { __goto?: typeof goto }).__goto = _originalGoto;
 
 /* ─────────────── memorable moments ─────────────── */
 
@@ -1122,9 +1327,18 @@ installBtn.addEventListener("click", async () => {
 });
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => { /* ignore */ });
-  });
+  if (import.meta.env.PROD) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/sw.js").catch(() => { /* ignore */ });
+    });
+  } else {
+    // In dev the SW would cache Vite's source modules and serve stale code
+    // after edits. Remove any registration left over from a previous build.
+    void navigator.serviceWorker.getRegistrations().then((regs) => {
+      for (const r of regs) void r.unregister();
+    });
+    void caches?.keys().then((keys) => keys.forEach((k) => void caches.delete(k)));
+  }
 }
 
 /* ─────────────── tiny helpers ─────────────── */
@@ -1365,12 +1579,12 @@ function releaseWakeLock(): void {
 
 // Re-acquire the wake lock if the page becomes visible again mid-transfer.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && active && !wakeLock) void acquireWakeLock();
+  if (document.visibilityState === "visible" && session && !wakeLock) void acquireWakeLock();
 });
 
 // Warn before leaving the page during an active transfer.
 window.addEventListener("beforeunload", (e) => {
-  if (active) {
+  if (session?.phase === "transfer") {
     e.preventDefault();
     e.returnValue = "A transfer is still in progress. Leave anyway?";
     return e.returnValue;

@@ -1344,3 +1344,24 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .legal-body, .blog-body { padding: 22px 20px 26px; }
   .blog-body .mission-split { grid-template-columns: 1fr; }
 }
+
+/* ─── deployment misconfiguration banner ─── */
+.config-banner {
+  position: relative;
+  z-index: 2;
+  max-width: 960px;
+  margin: 0 auto 16px;
+  padding: 12px 16px;
+  background: var(--coral);
+  color: var(--ink);
+  border: var(--border) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .config-banner { margin: 0 16px 16px; }
+}

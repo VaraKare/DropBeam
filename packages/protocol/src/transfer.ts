@@ -83,6 +83,17 @@ export interface TransferComplete {
   transferId: string;
 }
 
+/**
+ * Receiver → sender: every file has been fully written (and closed) on the
+ * receiving side. The sender must not report success or tear down the
+ * connection before this arrives — `file-end` / `complete` travel on the
+ * control channel, which is *not* ordered with respect to the data lanes.
+ */
+export interface TransferCompleteAck {
+  type: "complete-ack";
+  transferId: string;
+}
+
 export interface TransferAbort {
   type: "abort";
   transferId: string;
@@ -115,6 +126,7 @@ export type ControlMsg =
   | FileEnd
   | ChunkAck
   | TransferComplete
+  | TransferCompleteAck
   | TransferAbort
   | PauseMsg
   | ResumeMsg

@@ -45,7 +45,7 @@ describe("decideRoute", () => {
     expect(r.transport).toBe("p2p-direct");
   });
 
-  test("bulk hint bumps lanes + chunk size", () => {
+  test("bulk hint bumps lanes but keeps a WebRTC-safe chunk size", () => {
     const r = decideRoute(
       {
         sameHost: false,
@@ -57,7 +57,9 @@ describe("decideRoute", () => {
       { preferred: "bulk" },
     );
     expect(r.lanes).toBeGreaterThan(4);
-    expect(r.chunkSize).toBeGreaterThan(64 * 1024);
+    // Safari caps SCTP messages at 64 KiB *including* our frame header, so
+    // WebRTC routes must stay well under that regardless of mode.
+    expect(r.chunkSize).toBeLessThanOrEqual(16 * 1024);
   });
 
   test("vault hint enables app-layer encryption on LAN", () => {

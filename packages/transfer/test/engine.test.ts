@@ -30,6 +30,8 @@ class MemSinkFactory implements FileSinkFactory {
   buffers = new Map<number, Buffer>();
   bytesWritten = new Map<number, number>();
   shas = new Map<number, string>();
+  /** Writes that landed after the sink was finished (= data that would be lost on disk). */
+  writesAfterFinish = 0;
   /** Pre-seed bytes for resume tests. */
   prefilled = new Map<number, Buffer>();
 
@@ -45,11 +47,13 @@ class MemSinkFactory implements FileSinkFactory {
     if (pre) pre.copy(buf, 0);
     this.buffers.set(file.id, buf);
     this.bytesWritten.set(file.id, pre?.byteLength ?? 0);
+    let finished = false;
     return {
       async begin(_, off) {
         if (off > (fac.bytesWritten.get(file.id) ?? 0)) fac.bytesWritten.set(file.id, off);
       },
       async write(offset, bytes) {
+        if (finished) fac.writesAfterFinish++;
         bytes.forEach((b, i) => {
           buf[offset + i] = b;
         });
@@ -57,6 +61,7 @@ class MemSinkFactory implements FileSinkFactory {
         if (end > (fac.bytesWritten.get(file.id) ?? 0)) fac.bytesWritten.set(file.id, end);
       },
       async finish(sha) {
+        finished = true;
         fac.shas.set(file.id, sha);
       },
       async abort() {},
@@ -70,8 +75,9 @@ async function runOnce(opts: {
   prefill?: Map<number, Buffer>;
   chunkSize?: number;
   lanes?: number;
+  dataLaneLatencyMs?: number;
 }): Promise<MemSinkFactory> {
-  const { a, b } = makeInMemoryPair();
+  const { a, b } = makeInMemoryPair({ dataLaneLatencyMs: opts.dataLaneLatencyMs });
   const factory = new MemSinkFactory();
   if (opts.prefill) factory.prefilled = opts.prefill;
 
@@ -96,6 +102,26 @@ async function runOnce(opts: {
 }
 
 describe("transfer engine", () => {
+  test("control messages overtaking data lanes don't truncate files", async () => {
+    // Real WebRTC doesn't order separate DataChannels relative to each other,
+    // so `file-end` / `complete` on the control channel can arrive before the
+    // last data frames. The receiver must wait for every byte.
+    const a = randomBytes(150_000);
+    const b = randomBytes(5);
+    const f = await runOnce({
+      files: [
+        { id: 1, name: "a.bin", bytes: a },
+        { id: 2, name: "b.txt", bytes: b },
+      ],
+      chunkSize: 16 * 1024,
+      lanes: 4,
+      dataLaneLatencyMs: 25,
+    });
+    expect(Buffer.compare(f.buffers.get(1)!, a)).toBe(0);
+    expect(Buffer.compare(f.buffers.get(2)!, b)).toBe(0);
+    expect(f.writesAfterFinish).toBe(0);
+  });
+
   test("transfers a small file with correct sha", async () => {
     const bytes = randomBytes(40_000);
     const expectedSha = createHash("sha256").update(bytes).digest("hex");

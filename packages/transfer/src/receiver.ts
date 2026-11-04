@@ -28,6 +28,13 @@ interface FileState {
   resumeOffset: number;
   /** Running count of NEW bytes written during this session (excludes prefill). */
   bytesReceived: number;
+  /**
+   * sha256 from the sender's `file-end`, once it has arrived. `file-end` comes
+   * over the control channel and can overtake this file's last data frames
+   * (which ride separate, independently-ordered lanes), so we only finish the
+   * file once *both* the end marker and every byte are in.
+   */
+  pendingSha: string | null;
   done: boolean;
 }
 
@@ -42,6 +49,8 @@ export class TransferReceiver {
   /** Sum of (resumeOffset across all files) + new bytes written. */
   private totalReceived = 0;
   private lastProgressAt = 0;
+  /** Sender sent `complete`; finalize as soon as the last file is fully written. */
+  private completeRequested = false;
   private completeResolve: (() => void) | null = null;
   private completeReject: ((e: Error) => void) | null = null;
 
@@ -148,6 +157,7 @@ export class TransferReceiver {
 
   private async onManifest(m: Manifest): Promise<void> {
     this.currentManifest = m;
+    this.completeRequested = false;
     this.totalBytes = m.totalBytes;
     this.totalReceived = 0;
     this.startedAt = Date.now();
@@ -180,6 +190,7 @@ export class TransferReceiver {
         sink,
         resumeOffset: offset,
         bytesReceived: 0,
+        pendingSha: null,
         done: offset >= f.size, // already complete from a prior session
       });
       if (offset > 0) resumeFrom[f.id] = offset;
@@ -227,9 +238,14 @@ export class TransferReceiver {
       return;
     }
     await file.sink.write(offset, plaintext);
-    file.bytesReceived += plaintext.byteLength;
-    this.totalReceived += plaintext.byteLength;
+    // Only count bytes beyond the resume prefill, so the completeness check
+    // in maybeFinishFile() stays exact for partially-overlapping chunks.
+    const overlap = Math.max(0, Math.min(plaintext.byteLength, file.resumeOffset - offset));
+    const fresh = plaintext.byteLength - overlap;
+    file.bytesReceived += fresh;
+    this.totalReceived += fresh;
     this.maybeEmitProgress(file);
+    if (file.pendingSha !== null) await this.maybeFinishFile(header.fileId, file);
   }
 
   private maybeEmitProgress(file: FileState): void {
@@ -262,18 +278,26 @@ export class TransferReceiver {
 
   private async onFileEnd(fileId: number, sha: string): Promise<void> {
     const file = this.files.get(fileId);
-    if (!file || !this.currentManifest) return;
-    // v1: trust the sender-supplied sha + DTLS integrity. Sinks may verify
-    // independently (e.g. by re-reading the file from disk). We pass it
-    // through to sink.finish() so the sink can record/verify if desired.
-    await file.sink.finish(sha);
+    if (!file || !this.currentManifest || file.done) return;
+    file.pendingSha = sha;
+    await this.maybeFinishFile(fileId, file);
+  }
+
+  /** Close the file once its end marker *and* all of its bytes have arrived. */
+  private async maybeFinishFile(fileId: number, file: FileState): Promise<void> {
+    if (file.done || file.pendingSha === null || !this.currentManifest) return;
+    if (file.resumeOffset + file.bytesReceived < file.manifestEntry.size) return;
     file.done = true;
+    // v1: trust the sender-supplied sha + DTLS integrity. Sinks may verify
+    // independently. Passed through to sink.finish() so the sink can record it.
+    await file.sink.finish(file.pendingSha);
     this.emit({
       type: "file-done",
       transferId: this.currentManifest.transferId,
       fileId,
-      sha256: sha,
+      sha256: file.pendingSha,
     });
+    if (this.completeRequested && this.allDone()) this.finalizeComplete();
   }
 
   private allDone(): boolean {
@@ -284,12 +308,18 @@ export class TransferReceiver {
 
   private async onComplete(): Promise<void> {
     if (!this.currentManifest) return;
-    if (!this.allDone()) {
-      this.fail(new Error("complete before all files finished"));
-      return;
-    }
-    this.emit({ type: "complete", transferId: this.currentManifest.transferId });
-    this.completeResolve?.();
+    this.completeRequested = true;
+    // Data lanes may still be delivering the tail of the last file(s);
+    // maybeFinishFile() calls finalizeComplete() when they land.
+    if (this.allDone()) this.finalizeComplete();
+  }
+
+  private finalizeComplete(): void {
+    if (!this.currentManifest || !this.completeResolve) return;
+    const transferId = this.currentManifest.transferId;
+    this.sendControl({ type: "complete-ack", transferId });
+    this.emit({ type: "complete", transferId });
+    this.completeResolve();
     this.completeResolve = null;
     this.completeReject = null;
   }
