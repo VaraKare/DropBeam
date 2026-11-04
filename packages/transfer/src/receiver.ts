@@ -190,6 +190,18 @@ export class TransferReceiver {
       this.cryptoKey = await deriveKey(this.opts.encryptionPassphrase, m.encryption.salt);
     }
 
+    // Fail up front (before any bytes move) if the destination can't hold it.
+    if (this.opts.sinkFactory.checkCapacity) {
+      let alreadyHave = 0;
+      for (const f of m.files) alreadyHave += await this.opts.sinkFactory.resumeOffsetFor(f);
+      const problem = await this.opts.sinkFactory.checkCapacity(m.totalBytes - alreadyHave);
+      if (problem) {
+        this.sendControl({ type: "manifest-ack", transferId: m.transferId, accept: false, reason: problem });
+        this.fail(new Error(problem));
+        return;
+      }
+    }
+
     const resumeFrom: Record<number, number> = {};
     for (const f of m.files) {
       const offset = await this.opts.sinkFactory.resumeOffsetFor(f);
@@ -313,8 +325,15 @@ export class TransferReceiver {
     // sender's sha256 (computed over the whole source file). Constant memory.
     let verified = false;
     if (file.sink.readBack) {
-      this.emit({ type: "verifying", transferId, fileId });
-      const actual = await sha256OfStream(file.sink.readBack());
+      const fileSize = file.manifestEntry.size;
+      this.emit({ type: "verifying", transferId, fileId, bytesDone: 0, fileSize });
+      let lastEmit = Date.now();
+      const actual = await sha256OfStream(file.sink.readBack(), (bytesDone) => {
+        const now = Date.now();
+        if (now - lastEmit < this.progressMs) return;
+        lastEmit = now;
+        this.emit({ type: "verifying", transferId, fileId, bytesDone, fileSize });
+      });
       if (actual !== sha) {
         await file.sink.discard?.().catch(() => {});
         const err = new Error(

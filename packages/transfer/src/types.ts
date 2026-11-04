@@ -43,6 +43,11 @@ export interface FileSink {
 }
 
 export interface FileSinkFactory {
+  /**
+   * Optional: return an error string if `bytesNeeded` won't fit (checked before
+   * accepting a transfer, so we fail up front instead of at 80 %).
+   */
+  checkCapacity?(bytesNeeded: number): Promise<string | null>;
   /** Returns the byte offset to resume from (0 = start). */
   resumeOffsetFor(file: { id: number; name: string; size: number; relativePath?: string }): Promise<number>;
   open(file: { id: number; name: string; size: number; mime?: string; relativePath?: string }): Promise<FileSink>;
@@ -64,7 +69,7 @@ export type TransferEvent =
   | { type: "manifest"; transferId: string; files: { id: number; name: string; size: number }[]; totalBytes: number }
   | { type: "started"; transferId: string }
   | { type: "progress"; transferId: string } & ProgressEvent
-  | { type: "verifying"; transferId: string; fileId: number }
+  | { type: "verifying"; transferId: string; fileId: number; bytesDone: number; fileSize: number }
   | {
       type: "file-done";
       transferId: string;

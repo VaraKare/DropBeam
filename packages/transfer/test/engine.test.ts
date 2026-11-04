@@ -140,6 +140,27 @@ describe("transfer engine", () => {
     expect(se.status === "rejected" && String(se.reason)).toMatch(/receiver aborted: wrong-passphrase/);
   });
 
+  test("receiver refuses up front when the transfer won't fit", async () => {
+    const factory = new MemSinkFactory();
+    let asked = 0;
+    (factory as MemSinkFactory & { checkCapacity(n: number): Promise<string | null> }).checkCapacity = async (n) => {
+      asked = n;
+      return "insufficient-storage: needs 49 KB, this browser can store about 1 KB";
+    };
+    const { a, b } = makeInMemoryPair();
+    const recv = new TransferReceiver(b, { sinkFactory: factory });
+    recv.attach();
+    const done = recv.done();
+    const sender = new TransferSender(a, { chunkSize: 8 * 1024, lanes: 2 });
+    sender.prepareChannels();
+    const sent = sender.send("tx-cap", [memSource(1, "big.bin", randomBytes(50_000))]);
+    const [r, se] = await Promise.allSettled([done, sent]);
+    expect(asked).toBe(50_000);
+    expect(r.status === "rejected" && String(r.reason)).toMatch(/insufficient-storage/);
+    expect(se.status === "rejected" && String(se.reason)).toMatch(/receiver rejected: insufficient-storage/);
+    expect(factory.buffers.size).toBe(0); // nothing was opened / written
+  });
+
   test("corrupted data fails the integrity check and is discarded", async () => {
     const factory = new MemSinkFactory();
     factory.corruptFileId = 1;

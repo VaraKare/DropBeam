@@ -18,6 +18,11 @@
  *     are never overwritten.
  *   - If the transfer is interrupted, the partial stays behind and the next
  *     transfer of the same file resumes from its length.
+ *
+ * Also used for the browser's Origin Private File System ("browser storage"
+ * mode, for receivers without a folder picker: phones, Safari, Firefox).
+ * There, `createWritable()` may be missing (older Safari), so we fall back
+ * to `createSyncAccessHandle()`, which every OPFS browser offers in workers.
  */
 
 import type { FileSink, FileSinkFactory } from "../types.js";
@@ -26,10 +31,12 @@ interface FSFileHandleLike {
   kind: "file";
   name: string;
   getFile(): Promise<File>;
-  createWritable(options?: {
+  createWritable?(options?: {
     keepExistingData?: boolean;
     mode?: "exclusive" | "siloed";
   }): Promise<FSWritableLike>;
+  /** OPFS-only, dedicated workers only. Methods are sync per spec (async in Safari < 16.4). */
+  createSyncAccessHandle?(): Promise<FSSyncHandleLike>;
   /** Chrome 110+ (OPFS earlier). Renames in place; the handle follows the file. */
   move?(newName: string): Promise<void>;
 }
@@ -56,11 +63,71 @@ interface FSWritableLike {
   abort(reason?: unknown): Promise<void>;
 }
 
+interface FSSyncHandleLike {
+  write(buffer: ArrayBufferView, options?: { at?: number }): number | Promise<number>;
+  truncate(size: number): void | Promise<void>;
+  flush(): void | Promise<void>;
+  close(): void | Promise<void>;
+}
+
 export interface FileSystemAccessSinkOptions {
-  /** Root directory chosen by the user via `showDirectoryPicker()`. */
+  /** Root directory chosen by the user via `showDirectoryPicker()` (or an OPFS folder). */
   root: FSDirectoryHandleLike;
   /** If true (default), mkdir-p any `relativePath` components. */
   createSubdirectories?: boolean;
+  /** Ignore `relativePath` and put every file directly in `root`. */
+  flatten?: boolean;
+  /**
+   * Refuse transfers that won't fit in the origin's storage quota
+   * (`navigator.storage.estimate()`). Only meaningful for OPFS roots.
+   */
+  checkQuota?: boolean;
+}
+
+/** Minimal positional writer over either a writable stream or a sync access handle. */
+interface Writer {
+  write(offset: number, bytes: Uint8Array): Promise<void>;
+  truncate(size: number): Promise<void>;
+  close(): Promise<void>;
+  abort(): Promise<void>;
+}
+
+async function openWriter(handle: FSFileHandleLike, keepExistingData: boolean): Promise<Writer> {
+  if (typeof handle.createWritable === "function") {
+    const w = await handle.createWritable({ keepExistingData });
+    if (!keepExistingData) await w.truncate(0);
+    return {
+      write: (offset, bytes) => w.write({ type: "write", position: offset, data: bytes }),
+      truncate: (size) => w.truncate(size),
+      close: () => w.close(),
+      abort: () => w.abort(),
+    };
+  }
+  if (typeof handle.createSyncAccessHandle === "function") {
+    const h = await handle.createSyncAccessHandle();
+    if (!keepExistingData) await h.truncate(0);
+    return {
+      async write(offset, bytes) {
+        let done = 0;
+        while (done < bytes.byteLength) {
+          const n = await h.write(bytes.subarray(done), { at: offset + done });
+          if (!n) throw new Error("sync access handle wrote 0 bytes");
+          done += n;
+        }
+      },
+      truncate: async (size) => { await h.truncate(size); },
+      close: async () => { await h.flush(); await h.close(); },
+      abort: async () => { await h.close(); },
+    };
+  }
+  throw new Error("This browser can't write files to disk.");
+}
+
+function humanSize(n: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 type FileMeta = { name: string; size: number; relativePath?: string };
@@ -122,7 +189,7 @@ export function createFileSystemAccessSinkFactory(
   const createSubdirs = opts.createSubdirectories ?? true;
 
   async function resolveDir(file: FileMeta, create: boolean): Promise<{ dir: FSDirectoryHandleLike; leaf: string }> {
-    const path = file.relativePath ?? file.name;
+    const path = opts.flatten ? file.name : (file.relativePath ?? file.name);
     const parts = path.split(/[\\/]/).filter((p) => p && p !== "." && p !== "..");
     const leaf = safeLeaf(parts.pop() ?? file.name);
     let dir = opts.root;
@@ -133,6 +200,19 @@ export function createFileSystemAccessSinkFactory(
   }
 
   return {
+    async checkCapacity(bytesNeeded) {
+      if (!opts.checkQuota) return null;
+      const est = await (globalThis as { navigator?: { storage?: { estimate?(): Promise<{ quota?: number; usage?: number }> } } })
+        .navigator?.storage?.estimate?.().catch(() => undefined);
+      if (!est?.quota) return null;
+      const free = est.quota - (est.usage ?? 0);
+      // Keep a little headroom: browsers evict or refuse writes near the limit.
+      if (bytesNeeded > free * 0.95) {
+        return `insufficient-storage: needs ${humanSize(bytesNeeded)}, this browser can store about ${humanSize(Math.max(0, free * 0.95))}`;
+      }
+      return null;
+    },
+
     async resumeOffsetFor(file) {
       try {
         const { dir, leaf } = await resolveDir(file, false);
@@ -149,7 +229,7 @@ export function createFileSystemAccessSinkFactory(
       const partName = partialName(leaf, file.size);
       let handle = await dir.getFileHandle(partName, { create: true });
       let finalName: string | null = null;
-      let writable: FSWritableLike | null = null;
+      let writable: Writer | null = null;
       let closed = false;
       // Bytes [0, contiguous) are known-written. Out-of-order writes past it
       // wait in `ahead` until the gap fills. Used to trim the partial on abort
@@ -160,18 +240,13 @@ export function createFileSystemAccessSinkFactory(
       return {
         async begin(_meta, resumeOffset) {
           contiguous = resumeOffset;
-          writable = await handle.createWritable({ keepExistingData: resumeOffset > 0 });
-          if (resumeOffset > 0) {
-            await writable.seek(resumeOffset);
-          } else {
-            await writable.truncate(0);
-          }
+          writable = await openWriter(handle, resumeOffset > 0);
         },
 
         async write(offset, bytes) {
           if (!writable) throw new Error("fsAccessSink.write before begin");
           // Positional write: chunks from parallel lanes can arrive out of order.
-          await writable.write({ type: "write", position: offset, data: bytes });
+          await writable.write(offset, bytes);
           if (offset <= contiguous) {
             contiguous = Math.max(contiguous, offset + bytes.byteLength);
             for (let next = ahead.get(contiguous); next !== undefined; next = ahead.get(contiguous)) {
@@ -203,9 +278,13 @@ export function createFileSystemAccessSinkFactory(
           if (!moved) {
             // No rename support: stream-copy partial → final, then delete partial.
             const target = await dir.getFileHandle(finalName, { create: true });
-            const w = await target.createWritable({ keepExistingData: false });
+            const w = await openWriter(target, false);
             try {
-              for await (const chunk of streamFile(handle)) await w.write(chunk);
+              let pos = 0;
+              for await (const chunk of streamFile(handle)) {
+                await w.write(pos, chunk);
+                pos += chunk.byteLength;
+              }
               await w.close();
             } catch (e) {
               await w.abort().catch(() => {});
@@ -232,8 +311,9 @@ export function createFileSystemAccessSinkFactory(
               await writable.truncate(contiguous);
               await writable.close();
             } catch {
+              void reason;
               try {
-                await writable.abort(reason);
+                await writable.abort();
               } catch {
                 /* ignore */
               }

@@ -167,8 +167,16 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 /** Hash an async stream of chunks with constant memory. */
-export async function sha256OfStream(stream: AsyncIterable<Uint8Array>): Promise<string> {
+export async function sha256OfStream(
+  stream: AsyncIterable<Uint8Array>,
+  onProgress?: (bytesDone: number) => void,
+): Promise<string> {
   const h = await makeSha256();
-  for await (const chunk of stream) h.update(chunk);
+  let done = 0;
+  for await (const chunk of stream) {
+    h.update(chunk);
+    done += chunk.byteLength;
+    onProgress?.(done);
+  }
   return h.digestHex();
 }

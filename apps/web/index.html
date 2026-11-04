@@ -260,6 +260,7 @@
 
         <ul id="send-filelist" class="filelist"></ul>
         <div id="send-totals" class="totals hidden"></div>
+        <div id="send-warn" class="notice hidden" role="note"></div>
 
         <div class="passphrase-row">
           <details class="passphrase-details">
@@ -355,7 +356,15 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Choose folder…
             </button>
-            <span id="recv-dirname" class="folder-name muted">No folder chosen (defaults to browser downloads)</span>
+            <span id="recv-dirname" class="folder-name muted">No folder chosen. Files are held in this browser, then you tap Save.</span>
+          </div>
+          <p id="recv-storage" class="muted small hidden"></p>
+          <div id="recv-leftovers" class="notice hidden">
+            <span id="recv-leftovers-text"></span>
+            <span class="notice-actions">
+              <button id="recv-leftovers-show" class="chip-btn" type="button">Show</button>
+              <button id="recv-leftovers-clear" class="chip-btn" type="button">Clear</button>
+            </span>
           </div>
         </div>
 
@@ -455,11 +464,19 @@
           <div class="done-check">
             <svg width="64" height="64" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"/>
-              <path d="m8 12 3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path id="done-icon-path" d="m8 12 3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </div>
           <h2 id="done-title" class="stage-title centered">Transfer complete</h2>
           <p id="done-sub" class="muted centered"></p>
+          <div id="done-saves" class="done-saves hidden">
+            <p id="done-saves-note" class="muted small"></p>
+            <ul id="done-files" class="filelist"></ul>
+            <div class="action-row centered">
+              <button id="done-share-all" class="secondary hidden" type="button">Share all…</button>
+              <button id="done-clear" class="secondary" type="button">Clear from this browser</button>
+            </div>
+          </div>
           <div class="action-row centered">
             <button id="done-again" class="primary" type="button">Send something else</button>
           </div>

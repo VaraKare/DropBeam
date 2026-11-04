@@ -208,6 +208,7 @@ class WorkerSession {
         ...(sink.createSubdirectories !== undefined
           ? { createSubdirectories: sink.createSubdirectories }
           : {}),
+        ...(sink.browserStorage ? { flatten: true, checkQuota: true } : {}),
       });
     }
     const sinkTransport: SinkTransport = {

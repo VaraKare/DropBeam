@@ -70,6 +70,8 @@ export interface ReceiveOptions {
         kind: "fsaccess";
         directory: FileSystemDirectoryHandle;
         createSubdirectories?: boolean;
+        /** `directory` is OPFS: flatten folder paths and refuse transfers over quota. */
+        browserStorage?: boolean;
       };
 }
 
@@ -172,6 +174,7 @@ export class WorkerTransferHost {
                 ...(sinkConfig.createSubdirectories !== undefined
                   ? { createSubdirectories: sinkConfig.createSubdirectories }
                   : {}),
+                ...(sinkConfig.browserStorage ? { browserStorage: true } : {}),
               }
             : { kind: "proxy" },
       };

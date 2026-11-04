@@ -1365,3 +1365,44 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 640px) {
   .config-banner { margin: 0 16px 16px; }
 }
+
+/* ─── inline notices (size warnings, leftover files) ─── */
+.notice {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--yellow);
+  border: var(--border-thin) solid var(--ink);
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.45;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.notice-actions { display: inline-flex; gap: 8px; }
+
+/* ─── done: files held in browser storage ─── */
+.done-saves { width: 100%; margin-top: 8px; text-align: left; }
+.done-saves .filelist li { flex-wrap: wrap; }
+.save-btn {
+  margin-left: auto;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--mint);
+  border: var(--border-thin) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: 2px 2px 0 var(--ink);
+  cursor: pointer;
+}
+.save-btn + .save-btn { margin-left: 6px; background: var(--sky); }
+.save-btn:active { transform: translate(2px, 2px); box-shadow: none; }
+.save-btn.saved { background: var(--paper-shade); }
+
+/* failed transfer: swap the green success card for a coral one */
+.done-card.failed { background: var(--coral); }
+.done-card.failed .muted { color: var(--ink); }

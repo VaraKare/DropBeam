@@ -265,7 +265,10 @@ modeNet.addEventListener("click", () => setMode("net"));
 /* ─────────────── role cards ─────────────── */
 
 $<HTMLButtonElement>("#go-send").addEventListener("click", () => goto("send-pick"));
-$<HTMLButtonElement>("#go-recv").addEventListener("click", () => goto("recv-pick"));
+$<HTMLButtonElement>("#go-recv").addEventListener("click", () => {
+  goto("recv-pick");
+  void refreshRecvStorageInfo();
+});
 
 /* ─────────────── send: pick files ─────────────── */
 
@@ -305,6 +308,23 @@ function setPickedFiles(files: File[]): void {
     sendTotals.classList.add("hidden");
   }
   sendCreate.disabled = files.length === 0;
+  renderSendWarning(total);
+}
+
+const GB = 1024 ** 3;
+function renderSendWarning(total: number): void {
+  const warn = document.querySelector<HTMLElement>("#send-warn");
+  if (!warn) return;
+  if (total < 2 * GB) {
+    warn.classList.add("hidden");
+    return;
+  }
+  let text = `Big transfer (${humanBytes(total)}). Both devices need to keep this page open and stay awake until it finishes. If it gets interrupted, send again \u2014 it continues where it stopped.`;
+  if (total >= 10 * GB) {
+    text += " Best results: the receiver uses Chrome or Edge on a computer and chooses a folder. Phones, Safari and Firefox hold files inside the browser first, which needs about twice the free space.";
+  }
+  warn.textContent = text;
+  warn.classList.remove("hidden");
 }
 
 ["dragenter", "dragover"].forEach((ev) =>
@@ -410,16 +430,20 @@ let saveDir: FileSystemDirectoryHandle | null = null;
 type DirectoryPicker = (opts?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
 
 const showDirectoryPicker: DirectoryPicker | undefined =
-  // Dev-only test hook: `?e2e-opfs` saves into the Origin Private File System
-  // so automated browsers can receive without a native folder dialog.
-  // Dead-code-eliminated from production builds.
-  import.meta.env.DEV && new URLSearchParams(location.search).has("e2e-opfs")
-    ? () => navigator.storage.getDirectory()
-    : (window as unknown as { showDirectoryPicker?: DirectoryPicker }).showDirectoryPicker?.bind(window);
+  (window as unknown as { showDirectoryPicker?: DirectoryPicker }).showDirectoryPicker?.bind(window);
+
+/** Browser's private file storage (OPFS): phones, Safari, Firefox, and Chrome without a chosen folder. */
+const hasBrowserStorage = typeof navigator.storage?.getDirectory === "function";
+
+const recvStorageEl = $<HTMLElement>("#recv-storage");
+const recvLeftovers = $<HTMLElement>("#recv-leftovers");
+const recvLeftoversText = $<HTMLElement>("#recv-leftovers-text");
 
 if (!showDirectoryPicker) {
-  recvPickDirBtn.disabled = true;
-  recvPickDirBtn.title = "Folder picker not supported in this browser; downloads will go to the default downloads folder.";
+  recvPickDirBtn.classList.add("hidden");
+  recvDirName.textContent = hasBrowserStorage
+    ? "Files are held in this browser while they arrive. When it's done you tap Save (on iPhone: Share \u2192 Save to Files)."
+    : "This browser can't save received files. Please use a current version of Chrome, Edge, Safari or Firefox.";
 }
 
 recvPickDirBtn.addEventListener("click", async () => {
@@ -742,6 +766,14 @@ function friendlyError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   if (/room-not-found/.test(raw)) return "No active transfer uses that code. Check it, or ask the sender for a new one.";
   if (/room-full/.test(raw)) return "Someone else already joined that transfer.";
+  {
+    const m = /insufficient-storage: needs ([^,]+), this browser can store about (.+)$/.exec(raw);
+    if (m) {
+      return /receiver rejected/.test(raw)
+        ? `The receiving device doesn't have enough free space (needs ${m[1]}, has about ${m[2]}). Ask them to free up space or use Chrome or Edge on a computer and choose a folder.`
+        : `Not enough space in this browser: needs ${m[1]}, can store about ${m[2]}. Free up space on this device, or use Chrome or Edge on a computer and choose a folder.`;
+    }
+  }
   if (/rate-limited/.test(raw)) return "Too many attempts. Wait a few seconds and try again.";
   if (/passphrase-required/.test(raw)) return "The sender protected this transfer with a passphrase. Enter it and try again.";
   if (/receiver aborted: wrong-passphrase/.test(raw)) return "The receiver entered a different passphrase, so nothing was saved.";
@@ -761,6 +793,8 @@ function friendlyError(err: unknown): string {
 
 function resetActiveUI(peerLabel: string): void {
   manifestFiles = [];
+  receivedFiles = [];
+  longTransferHintShown = false;
   fileStatusEls.clear();
   activeFilelist.innerHTML = "";
   progressFill.style.width = "0%";
@@ -834,13 +868,13 @@ async function startReceive(
   cancelActive();
   recvGoBtn.disabled = true;
 
-  // Pick the destination folder *first*, while we still have the click's user
-  // activation and before we occupy the sender's room.
+  // Destination: the folder the user chose, otherwise the browser's private
+  // storage (files are saved out with a tap once the transfer finishes).
+  const browserMode = !dir;
   try {
-    if (!dir) dir = await pickSaveDir();
+    if (!dir) dir = await inboxDir();
   } catch (err) {
     recvGoBtn.disabled = false;
-    if ((err as Error).name === "AbortError") return; // user closed the picker
     onTransferFailed(friendlyError(err));
     return;
   }
@@ -871,7 +905,7 @@ async function startReceive(
     s.transportPoll = startTransportPoll(link.pc);
     s.host = new WorkerTransferHost({ worker: () => new TransferWorker(), peerConnection: link.pc });
     const transfer = s.host.receive({
-      sink: { kind: "fsaccess", directory: dir },
+      sink: { kind: "fsaccess", directory: dir, ...(browserMode ? { browserStorage: true } : {}) },
       ...(passphrase ? { encryptionPassphrase: passphrase } : {}),
       onEvent: (e) => onTransferEvent(e, []),
     });
@@ -881,7 +915,12 @@ async function startReceive(
     await race(s, link.start());
     await race(s, transfer);
     s.completed = true;
-    onTransferDone(dir.name ? `Saved to “${dir.name}”.` : "Files saved.");
+    if (browserMode) {
+      onTransferDone("Now save them to this device.");
+      await renderSaves(receivedFiles.map((f) => ({ name: f.savedAs, size: f.size })), "fresh");
+    } else {
+      onTransferDone(`Saved to \u201c${dir.name}\u201d.`);
+    }
   } catch (err) {
     if (!s.cancelled) onTransferFailed(friendlyError(err));
   } finally {
@@ -890,15 +929,89 @@ async function startReceive(
   }
 }
 
-async function pickSaveDir(): Promise<FileSystemDirectoryHandle> {
-  if (!showDirectoryPicker) {
-    throw new Error("Receiving currently needs Chrome or Edge on a computer (they can save straight to a folder). Support for phones, Safari and Firefox is coming.");
+/* ─────────────── browser-storage inbox (OPFS) ─────────────── */
+
+const INBOX = "dropbeam-inbox";
+/** Received files left in browser storage are removed after this long. */
+const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+async function inboxDir(): Promise<FileSystemDirectoryHandle> {
+  if (!hasBrowserStorage) {
+    throw new Error("This browser can't save received files. Please use a current version of Chrome, Edge, Safari or Firefox.");
   }
-  saveDir = await showDirectoryPicker({ mode: "readwrite" });
-  recvDirName.textContent = saveDir.name;
-  recvDirName.classList.remove("muted");
-  return saveDir;
+  const root = await navigator.storage.getDirectory();
+  return root.getDirectoryHandle(INBOX, { create: true });
 }
+
+type InboxEntry = { name: string; size: number; lastModified: number; partial: boolean };
+
+async function listInbox(): Promise<InboxEntry[]> {
+  if (!hasBrowserStorage) return [];
+  const out: InboxEntry[] = [];
+  try {
+    const dir = await inboxDir();
+    const it = (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
+    for await (const [name, h] of it) {
+      if (h.kind !== "file") continue;
+      try {
+        const f = await (h as FileSystemFileHandle).getFile();
+        out.push({ name, size: f.size, lastModified: f.lastModified, partial: name.endsWith(".dbpart") });
+      } catch { /* locked by an in-flight write */ }
+    }
+  } catch { /* storage unavailable (private mode, etc.) */ }
+  return out;
+}
+
+async function removeFromInbox(names: string[]): Promise<void> {
+  try {
+    const dir = await inboxDir();
+    await Promise.all(names.map((n) => dir.removeEntry(n).catch(() => {})));
+  } catch { /* ignore */ }
+}
+
+/** Drop anything older than a day so forgotten transfers don't eat disk space. */
+async function pruneInbox(): Promise<void> {
+  const cutoff = Date.now() - INBOX_MAX_AGE_MS;
+  const old = (await listInbox()).filter((e) => e.lastModified < cutoff).map((e) => e.name);
+  if (old.length) await removeFromInbox(old);
+}
+
+/** Recv screen: how much this browser can hold, and any files left from earlier. */
+async function refreshRecvStorageInfo(): Promise<void> {
+  if (!hasBrowserStorage) return;
+  try {
+    const est = await navigator.storage.estimate();
+    if (est.quota) {
+      const free = Math.max(0, est.quota - (est.usage ?? 0)) * 0.95;
+      recvStorageEl.textContent = showDirectoryPicker
+        ? `Without a folder, this browser can hold about ${humanBytes(free)} of incoming files.`
+        : `This browser can hold about ${humanBytes(free)} of incoming files.`;
+      recvStorageEl.classList.remove("hidden");
+    }
+  } catch { /* estimate unsupported */ }
+  const done = (await listInbox()).filter((e) => !e.partial);
+  if (done.length) {
+    const bytes = done.reduce((n, e) => n + e.size, 0);
+    recvLeftoversText.textContent = `${done.length} received file${done.length === 1 ? " is" : "s are"} still stored in this browser (${humanBytes(bytes)}).`;
+    recvLeftovers.classList.remove("hidden");
+  } else {
+    recvLeftovers.classList.add("hidden");
+  }
+}
+
+$<HTMLButtonElement>("#recv-leftovers-show").addEventListener("click", async () => {
+  const done = (await listInbox()).filter((e) => !e.partial);
+  setDoneState("ok", "Files waiting in this browser", "Save them to this device, then clear them.");
+  goto("done");
+  await renderSaves(done.map((e) => ({ name: e.name, size: e.size })), "leftover");
+});
+$<HTMLButtonElement>("#recv-leftovers-clear").addEventListener("click", async () => {
+  const all = await listInbox();
+  await removeFromInbox(all.map((e) => e.name));
+  await refreshRecvStorageInfo();
+});
+
+void pruneInbox().then(() => refreshRecvStorageInfo());
 
 /* ─────────────── active stage rendering ─────────────── */
 
@@ -922,6 +1035,9 @@ endSelfGlyph.textContent = initials(DEVICE.name);
 endSelfName.textContent = DEVICE.name;
 
 let manifestFiles: { fileId: number; name: string; size: number; mime?: string }[] = [];
+/** Files this receive session finished, with the name they ended up under. */
+let receivedFiles: { name: string; savedAs: string; size: number }[] = [];
+let longTransferHintShown = false;
 const fileStatusEls = new Map<number, HTMLElement>();
 
 function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
@@ -965,14 +1081,29 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       if (inFlight && !inFlight.classList.contains("ok")) {
         inFlight.textContent = "in flight";
       }
+      // Long transfers die if the device sleeps or the tab closes: say so once.
+      if (!longTransferHintShown && isFinite(e.etaSeconds) && e.etaSeconds > 10 * 60) {
+        longTransferHintShown = true;
+        setActiveStatus(
+          `Long transfer (about ${Math.round(e.etaSeconds / 60)} min). Keep this page open and the device awake \u2014 plugged in if you can. If it gets interrupted, send again and it continues where it stopped.`,
+        );
+      }
       break;
     }
     case "verifying": {
       const el = fileStatusEls.get(e.fileId);
-      if (el) el.textContent = "verifying…";
+      if (el) {
+        el.textContent = e.fileSize > 0 && e.bytesDone > 0
+          ? `verifying ${Math.floor((e.bytesDone / e.fileSize) * 100)}%`
+          : "verifying\u2026";
+      }
       break;
     }
     case "file-done": {
+      const entry = manifestFiles.find((f) => f.fileId === e.fileId);
+      if (entry && session?.role === "receive") {
+        receivedFiles.push({ name: entry.name, savedAs: e.savedAs ?? entry.name, size: entry.size });
+      }
       const el = fileStatusEls.get(e.fileId);
       if (el) {
         el.textContent = e.verified ? "✓ verified" : "✓ sent";
@@ -1142,19 +1273,141 @@ doneAgain.addEventListener("click", () => {
   goto("idle");
 });
 
-function onTransferDone(subtitle: string): void {
-  doneTitle.textContent = "Transfer complete";
+const doneCard = $<HTMLElement>(".done-card");
+const doneIconPath = $<SVGPathElement>("#done-icon-path");
+const doneSaves = $<HTMLElement>("#done-saves");
+const doneSavesNote = $<HTMLElement>("#done-saves-note");
+const doneFiles = $<HTMLUListElement>("#done-files");
+const doneShareAll = $<HTMLButtonElement>("#done-share-all");
+const doneClear = $<HTMLButtonElement>("#done-clear");
+
+function setDoneState(kind: "ok" | "failed", title: string, subtitle: string): void {
+  doneCard.classList.toggle("failed", kind === "failed");
+  doneIconPath.setAttribute("d", kind === "ok" ? "m8 12 3 3 5-6" : "m9 9 6 6m0-6-6 6");
+  doneTitle.textContent = title;
   doneSub.textContent = subtitle;
+  doneSaves.classList.add("hidden");
+  doneFiles.innerHTML = "";
+}
+
+function onTransferDone(subtitle: string): void {
+  setDoneState("ok", "Transfer complete", subtitle);
   goto("done");
   burstConfetti();
   if ("vibrate" in navigator) navigator.vibrate?.([30, 80, 30]);
 }
 
 function onTransferFailed(message: string): void {
-  doneTitle.textContent = "Transfer didn't finish";
-  doneSub.textContent = message;
+  setDoneState("failed", "Transfer didn't finish", message);
   goto("done");
 }
+
+/** Names currently listed in the done screen's save list (for Clear / Share all). */
+let savesShown: string[] = [];
+
+async function getInboxFile(name: string): Promise<File> {
+  const dir = await inboxDir();
+  return (await dir.getFileHandle(name)).getFile();
+}
+
+function canShareFiles(files: File[]): boolean {
+  const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+  try {
+    return !!nav.canShare && nav.canShare({ files });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Received files held in browser storage: one Save (download) button each,
+ * plus Share on devices that support sharing files (iPhone → Save to Files).
+ * The File objects are disk-backed, so even huge files aren't loaded into RAM.
+ */
+async function renderSaves(files: { name: string; size: number }[], kind: "fresh" | "leftover"): Promise<void> {
+  savesShown = files.map((f) => f.name);
+  doneFiles.innerHTML = "";
+  if (!files.length) return;
+  doneSavesNote.textContent =
+    (kind === "fresh"
+      ? "Your files are in this browser's temporary storage. "
+      : "")
+    + "Tap Save to put each one in your Downloads (on iPhone: Share \u2192 Save to Files). They're deleted automatically after 24 hours, or tap Clear when you're done.";
+
+  let anyShare = false;
+  for (const f of files) {
+    const li = document.createElement("li");
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.textContent = fileIconFor(f.name);
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.textContent = f.name;
+    const size = document.createElement("span");
+    size.className = "file-size";
+    size.textContent = humanBytes(f.size);
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "save-btn";
+    save.textContent = "Save";
+    save.addEventListener("click", async () => {
+      try {
+        const file = await getInboxFile(f.name);
+        const url = URL.createObjectURL(file);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = f.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        save.textContent = "Saved \u2713";
+        save.classList.add("saved");
+      } catch {
+        save.textContent = "Missing";
+        save.disabled = true;
+      }
+    });
+    li.append(icon, name, size, save);
+
+    try {
+      const file = await getInboxFile(f.name);
+      if (canShareFiles([file])) {
+        anyShare = true;
+        const share = document.createElement("button");
+        share.type = "button";
+        share.className = "save-btn";
+        share.textContent = "Share\u2026";
+        share.addEventListener("click", async () => {
+          try {
+            await navigator.share({ files: [await getInboxFile(f.name)] });
+          } catch { /* cancelled */ }
+        });
+        li.append(share);
+      }
+    } catch { /* file vanished */ }
+    doneFiles.appendChild(li);
+  }
+  doneShareAll.classList.toggle("hidden", !(anyShare && files.length > 1));
+  doneClear.classList.remove("hidden");
+  doneSaves.classList.remove("hidden");
+}
+
+doneShareAll.addEventListener("click", async () => {
+  try {
+    const files = await Promise.all(savesShown.map((n) => getInboxFile(n)));
+    await navigator.share({ files });
+  } catch { /* cancelled or too many files for the share sheet */ }
+});
+
+doneClear.addEventListener("click", async () => {
+  await removeFromInbox(savesShown);
+  savesShown = [];
+  doneFiles.innerHTML = "";
+  doneShareAll.classList.add("hidden");
+  doneClear.classList.add("hidden");
+  doneSavesNote.textContent = "Cleared from this browser.";
+});
 
 /* ─────────────── signaling glue ─────────────── */
 
@@ -1404,7 +1657,7 @@ const INFO_TEXT: Record<string, string> = {
   lan: `<strong>Same Wi-Fi mode</strong> connects two devices on the same router <b>without using the internet at all</b>. WebRTC uses <code>host</code> ICE candidates (your private LAN IPs) and the data channel runs directly over your Wi-Fi. Perfect for hotel networks, planes, offline sites — anywhere internet is slow, expensive, or absent.`,
   net: `<strong>Anywhere mode</strong> works across the open internet, even when the two devices are on different networks behind NATs. STUN servers help the peers discover their public addresses and hole-punch a direct path. If that fails, a TURN relay forwards encrypted bytes — we never see them in plaintext.`,
   passphrase: `By default your transfer is encrypted in transit (<code>DTLS</code> on the WebRTC channel). A <strong>passphrase</strong> adds a second layer: every chunk is encrypted with <code>AES-GCM-256</code> using a key derived from your passphrase via <code>PBKDF2-200k</code>. Even if someone broke into our signaling server (we don't store files anyway), they couldn't read your bytes.`,
-  folder: `Receivers stream bytes <b>directly to disk</b> using the File System Access API — files never get loaded into RAM, so even a 500&nbsp;GB transfer doesn't slow your browser. If you don't pick a folder, files go to your browser's default downloads folder. Chrome and Edge support this; Safari and Firefox fall back to ordinary downloads.`,
+  folder: `Receivers stream bytes <b>directly to disk</b> using the File System Access API — files never get loaded into RAM, so even a 500&nbsp;GB transfer doesn't slow your browser. Choosing a folder works in Chrome and Edge on computers. Without a folder (and always on phones, Safari and Firefox) files are held in the browser's private storage while they arrive \u2014 still streamed to disk, not RAM \u2014 and you save each one with a tap at the end. That needs about twice the free space while you save, and leftovers are deleted after 24 hours.`,
   transport: `<strong>LAN-direct</strong>: the two devices found each other on your Wi-Fi. Fastest, zero internet use.<br><br><strong>P2P-direct</strong>: STUN punched a direct hole through both NATs. Fast, peer-to-peer.<br><br><strong>TURN relayed</strong>: at least one peer is on a strict NAT and the bytes flow through a relay. Slower, but still end-to-end encrypted.`,
 };
 
