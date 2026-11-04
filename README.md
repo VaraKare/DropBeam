@@ -41,6 +41,15 @@ with an optional passphrase for an extra AES-GCM-256 layer.
   - a recent-transfers list (kept only on this device)
   - installable as an app (PWA)
 
+## Docs
+
+| Doc | What's in it |
+|---|---|
+| [docs/MAP.md](docs/MAP.md) | Project map: system diagram, transfer sequence, screens, every folder explained, where data lives |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | To-dos, manual + automated test plan, features to add, scaling to many users, Docker, caching, storage |
+| [docs/PRODUCT.md](docs/PRODUCT.md) | Who it's for, comparison with AirDrop / WeTransfer / Snapdrop and others, running costs, ads and other income, growth estimate |
+| [SETUP.md](SETUP.md) · [DEPLOY.md](DEPLOY.md) · [FORK.md](FORK.md) · [FEATURES.md](FEATURES.md) | Run locally · go live · contribute · feature list |
+
 ## Repo layout
 
 ```
