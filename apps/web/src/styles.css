@@ -1406,3 +1406,135 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* failed transfer: swap the green success card for a coral one */
 .done-card.failed { background: var(--coral); }
 .done-card.failed .muted { color: var(--ink); }
+
+/* ─── connection stepper ─── */
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  counter-reset: step;
+}
+.steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: var(--border-thin) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--paper-soft);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-mute);
+  min-width: 0;
+}
+.steps .step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-dot {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border: 2px solid var(--ink-mute);
+  border-radius: 50%;
+}
+.steps li.active { color: var(--ink); background: var(--yellow); }
+.steps li.active .step-dot { border-color: var(--ink); animation: step-pulse 1s ease-in-out infinite; }
+.steps li.done { color: var(--ink); background: var(--mint); }
+.steps li.done .step-dot { border-color: var(--ink); background: var(--ink); }
+.steps li.failed { color: var(--ink); background: var(--coral); }
+@keyframes step-pulse { 50% { transform: scale(0.6); } }
+@media (prefers-reduced-motion: reduce) { .steps li.active .step-dot { animation: none; } }
+@media (max-width: 520px) {
+  .steps { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ─── per-file progress bar (bottom edge of each row) ─── */
+.filelist li { position: relative; overflow: hidden; }
+.file-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: transparent;
+}
+.file-bar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--ink);
+  transition: width 0.25s linear;
+}
+.file-bar.verifying .file-bar-fill { background: var(--sky); }
+.file-bar.ok .file-bar-fill { background: var(--ok); }
+
+/* ─── share code expiry ─── */
+.share-expiry { font-variant-numeric: tabular-nums; margin: 8px 0 0; }
+.share-expiry.expired { color: var(--err); font-weight: 700; }
+
+/* ─── recent transfers ─── */
+.history {
+  margin-top: 28px;
+  padding: 16px;
+  background: var(--paper-soft);
+  border: var(--border) solid var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+.history-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.history-head h3 { margin: 0; font-size: 16px; font-weight: 900; }
+.history-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.history-list li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px 10px;
+  align-items: center;
+  font-size: 14px;
+  padding: 8px 10px;
+  border: var(--border-thin) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--paper);
+}
+.history-dir {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: var(--border-thin) solid var(--ink);
+  border-radius: var(--radius);
+  font-weight: 900;
+}
+.history-dir.sent { background: var(--mint); }
+.history-dir.received { background: var(--lilac); }
+.history-main { min-width: 0; }
+.history-files { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-meta { color: var(--ink-mute); font-size: 12px; }
+.history-result { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+.history-result.ok { color: var(--ok); }
+.history-result.fail { color: var(--err); }
+
+/* Link card: let columns shrink so the peer's glyph never gets pushed off
+   screen on narrow phones (the transport pill used to force the middle
+   column wider than its 2fr share). */
+.link-viz { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr); }
+.link-end, .link-beam { min-width: 0; }
+.end-name { max-width: 100%; }
+.link-beam .pill { max-width: 100%; min-width: 0; }
+.link-beam .pill #transport-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+@media (max-width: 460px) {
+  .link-viz { gap: 8px; padding: 18px 12px; }
+  .link-beam .pill { font-size: 10px; padding-left: 8px; padding-right: 8px; }
+}
+@media (max-width: 460px) {
+  /* Phones: devices side by side, connection status on its own full row. */
+  .link-viz {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "self peer" "beam beam";
+    row-gap: 14px;
+  }
+  .link-viz > .link-end:first-child { grid-area: self; }
+  .link-viz > .link-beam { grid-area: beam; height: auto; }
+  .link-viz > .link-end:last-child { grid-area: peer; }
+  .link-beam .pill { font-size: 11px; }
+}

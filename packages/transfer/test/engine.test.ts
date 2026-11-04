@@ -161,6 +161,28 @@ describe("transfer engine", () => {
     expect(factory.buffers.size).toBe(0); // nothing was opened / written
   });
 
+  test("sender stops promptly when the receiver disappears before confirming", async () => {
+    const factory = new MemSinkFactory();
+    const origOpen = factory.open.bind(factory);
+    // Receiver gets stuck finishing the file (never acks), then its side closes.
+    factory.open = async (file) => {
+      const sink = await origOpen(file);
+      return { ...sink, finish: () => new Promise<void>(() => {}) };
+    };
+    const { a, b } = makeInMemoryPair();
+    const recv = new TransferReceiver(b, { sinkFactory: factory });
+    recv.attach();
+    recv.done().catch(() => {});
+    const sender = new TransferSender(a, { chunkSize: 8 * 1024, lanes: 2 });
+    sender.prepareChannels();
+    const started = Date.now();
+    const sent = sender.send("tx-gone", [memSource(1, "x.bin", randomBytes(20_000))]);
+    setTimeout(() => b.close(), 50);
+    const [r] = await Promise.allSettled([sent]);
+    expect(r.status === "rejected" && String(r.reason)).toMatch(/control channel closed/);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
   test("corrupted data fails the integrity check and is discarded", async () => {
     const factory = new MemSinkFactory();
     factory.corruptFileId = 1;

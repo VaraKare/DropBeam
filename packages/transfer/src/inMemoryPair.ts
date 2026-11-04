@@ -91,7 +91,7 @@ class MemPeerConnection implements PeerConnection {
   onconnectionstatechange: ((state: string) => void) | null = null;
 
   partner!: MemPeerConnection;
-  private channels: MemChannel[] = [];
+  channels: MemChannel[] = [];
 
   constructor(private readonly dataLaneLatencyMs = 0) {}
 
@@ -102,6 +102,9 @@ class MemPeerConnection implements PeerConnection {
     local.partner = remote;
     remote.partner = local;
     this.channels.push(local);
+    // Closing either peer must close every channel it can see, including the
+    // ones the other side opened (as with a real RTCPeerConnection).
+    this.partner.channels.push(remote);
     queueMicrotask(() => {
       this.partner.ondatachannel?.(remote);
       // open both ends after the partner has had a chance to attach.

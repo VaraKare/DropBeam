@@ -40,6 +40,8 @@ export class TransferSender {
   private aborted = false;
   /** Reason the receiver gave if it aborted (e.g. "integrity-check-failed"). */
   private remoteAbort: string | null = null;
+  /** Wakes a pending awaitCompleteAck() when the control channel closes. */
+  private onControlClosed: (() => void) | null = null;
 
   constructor(
     private readonly pc: PeerConnection,
@@ -126,6 +128,14 @@ export class TransferSender {
     this.sendControl(manifest);
     const ack = await ackPromise;
     if (!ack.accept) throw new Error(`receiver rejected: ${ack.reason ?? "no reason"}`);
+
+    // If the control channel closes, the receiver is gone (tab closed, user
+    // cancelled, network dropped). Stop instead of waiting on acks forever.
+    this.control.onclose = () => {
+      if (!this.remoteAbort) this.remoteAbort = "control channel closed";
+      this.aborted = true;
+      this.onControlClosed?.();
+    };
 
     // Listen for a receiver-side abort for the rest of the transfer (e.g. a
     // failed integrity check or the user cancelling on the other device).
@@ -261,10 +271,18 @@ export class TransferSender {
 
   private awaitCompleteAck(transferId: string, timeoutMs: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
+      if (this.aborted) {
+        reject(this.abortError());
+        return;
+      }
       const timer = setTimeout(() => {
         this.control.onmessage = null;
         reject(new Error("receiver never confirmed the transfer finished"));
       }, timeoutMs);
+      this.onControlClosed = () => {
+        clearTimeout(timer);
+        reject(this.abortError());
+      };
       this.control.onmessage = (data: string | ArrayBuffer) => {
         if (typeof data !== "string") return;
         try {
@@ -287,6 +305,7 @@ export class TransferSender {
   }
 
   private abortError(): Error {
+    if (this.remoteAbort === "control channel closed") return new Error("control channel closed");
     return new Error(this.remoteAbort ? `receiver aborted: ${this.remoteAbort}` : "aborted");
   }
 

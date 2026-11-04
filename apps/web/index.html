@@ -225,6 +225,15 @@
           </li>
         </ul>
 
+        <section id="history" class="history hidden" aria-labelledby="history-title">
+          <div class="history-head">
+            <h3 id="history-title">Recent transfers</h3>
+            <button id="history-clear" class="chip-btn" type="button">Clear</button>
+          </div>
+          <ul id="history-list" class="history-list"></ul>
+          <p class="muted small">Kept only on this device: file names and sizes, never contents.</p>
+        </section>
+
         <div class="learn-more-row">
           <button class="learn-more" type="button" data-blog>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/><path d="M12 16v-5m0-3h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -312,6 +321,8 @@
             <p class="muted small">
               Tell them the code, or have them scan the QR on the right.
             </p>
+            <p id="share-expiry" class="share-expiry muted small" aria-live="polite"></p>
+            <button id="share-renew" class="chip-btn hidden" type="button">Get a new code</button>
           </div>
 
           <div class="qr-block">
@@ -396,6 +407,13 @@
           <h2 id="active-title" class="stage-title">Connecting…</h2>
         </div>
 
+        <ol id="steps" class="steps" aria-label="Transfer progress">
+          <li data-step="connect"><span class="step-dot"></span><span class="step-label">Connecting</span></li>
+          <li data-step="link"><span class="step-dot"></span><span class="step-label">Secure link</span></li>
+          <li data-step="transfer"><span class="step-dot"></span><span class="step-label">Transferring</span></li>
+          <li data-step="verify"><span class="step-dot"></span><span class="step-label">Verified</span></li>
+        </ol>
+
         <div class="link-viz">
           <div class="link-end">
             <div id="end-self-glyph" class="end-glyph"></div>
@@ -478,7 +496,8 @@
             </div>
           </div>
           <div class="action-row centered">
-            <button id="done-again" class="primary" type="button">Send something else</button>
+            <button id="done-retry" class="secondary hidden" type="button">Try again</button>
+            <button id="done-again" class="primary" type="button">Back to start</button>
           </div>
         </div>
       </section>

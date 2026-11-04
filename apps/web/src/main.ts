@@ -189,6 +189,7 @@ function goto(stage: Stage, push = true): void {
   window.scrollTo({ top: 0, behavior: "smooth" });
 
   if (stage === "idle") {
+    renderHistory();
     setPickedFiles([]);
     if (sendFilesInput) sendFilesInput.value = "";
     if (recvCodeInput) recvCodeInput.value = "";
@@ -374,6 +375,10 @@ let currentShareCode: string | null = null;
 let currentShareUrl: string | null = null;
 
 function setShareCode(code: string): void {
+  if (code === "\u2026" || code === "…") {
+    document.querySelector("#share-expiry")!.textContent = "";
+    document.querySelector("#share-renew")?.classList.add("hidden");
+  }
   currentShareCode = code;
   shareCodeEl.textContent = code;
 
@@ -565,6 +570,9 @@ interface Session {
   cancelled: boolean;
   /** Set once the transfer finished successfully. */
   completed: boolean;
+  /** The other device's friendly name, once known. */
+  peerName: string;
+  startedAt: number;
   tornDown: boolean;
 }
 
@@ -592,6 +600,8 @@ function newSession(role: Session["role"]): Session {
     fail: (err) => reject(err),
     cancelled: false,
     completed: false,
+    peerName: "",
+    startedAt: Date.now(),
     tornDown: false,
   };
   // Losing signaling only matters while we still need it for the handshake;
@@ -679,6 +689,7 @@ function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; 
       s.phase = "transfer";
       clearTimeout(connectTimer);
       setActiveTitle(s.role === "send" ? "Sending…" : "Receiving…");
+      setStep("link");
     } else if (st === "failed") {
       clearTimeout(connectTimer);
       s.fail(new Error(connectFailureMessage(s.phase)));
@@ -795,6 +806,10 @@ function resetActiveUI(peerLabel: string): void {
   manifestFiles = [];
   receivedFiles = [];
   longTransferHintShown = false;
+  fileBarEls.clear();
+  currentStep = "connect";
+  setStep("connect", true); // force-reset
+  setStep("connect");
   fileStatusEls.clear();
   activeFilelist.innerHTML = "";
   progressFill.style.width = "0%";
@@ -812,6 +827,7 @@ function resetActiveUI(peerLabel: string): void {
 async function startSend(files: File[], passphrase: string | undefined): Promise<void> {
   cancelActive();
   if (!files.length) return;
+  lastAttempt = { role: "send", files, passphrase };
   sendCreate.disabled = true;
   let s: Session;
   try {
@@ -831,8 +847,11 @@ async function startSend(files: File[], passphrase: string | undefined): Promise
     const room = await race(s, s.signaling.createRoom());
     setShareCode(room.code);
     waitingText.textContent = "Waiting for the receiver to join…";
+    startExpiryCountdown(s, room.expiresAt);
 
     const peer = await race(s, waitForPeerJoined(s.signaling));
+    stopExpiryCountdown();
+    s.peerName = peer.name;
     resetActiveUI("Receiver");
     setPeerName(peer.name);
     goto("active");
@@ -851,10 +870,16 @@ async function startSend(files: File[], passphrase: string | undefined): Promise
     await race(s, link.start());
     await race(s, transfer);
     s.completed = true;
+    recordHistory(s, true);
     onTransferDone("Files delivered.");
   } catch (err) {
-    if (!s.cancelled) onTransferFailed(friendlyError(err));
+    if (!s.cancelled) {
+      const msg = friendlyError(err);
+      recordHistory(s, false, msg);
+      onTransferFailed(msg);
+    }
   } finally {
+    stopExpiryCountdown();
     teardown(s, false);
     sendCreate.disabled = pickedFiles.length === 0;
   }
@@ -867,6 +892,7 @@ async function startReceive(
 ): Promise<void> {
   cancelActive();
   recvGoBtn.disabled = true;
+  lastAttempt = { role: "receive" };
 
   // Destination: the folder the user chose, otherwise the browser's private
   // storage (files are saved out with a tap once the transfer finishes).
@@ -900,6 +926,7 @@ async function startReceive(
     const remote = joined.peers[0];
     if (!remote) throw new Error("The sender isn't connected any more. Ask them for a new code.");
     setPeerName(remote.device.name);
+    s.peerName = remote.device.name;
 
     const link = createLink(s, remote.peerId);
     s.transportPoll = startTransportPoll(link.pc);
@@ -915,6 +942,7 @@ async function startReceive(
     await race(s, link.start());
     await race(s, transfer);
     s.completed = true;
+    recordHistory(s, true, browserMode ? undefined : `saved to ${dir.name}`);
     if (browserMode) {
       onTransferDone("Now save them to this device.");
       await renderSaves(receivedFiles.map((f) => ({ name: f.savedAs, size: f.size })), "fresh");
@@ -922,7 +950,11 @@ async function startReceive(
       onTransferDone(`Saved to \u201c${dir.name}\u201d.`);
     }
   } catch (err) {
-    if (!s.cancelled) onTransferFailed(friendlyError(err));
+    if (!s.cancelled) {
+      const msg = friendlyError(err);
+      recordHistory(s, false, msg);
+      onTransferFailed(msg);
+    }
   } finally {
     teardown(s, false);
     updateRecvButton();
@@ -1038,6 +1070,37 @@ let manifestFiles: { fileId: number; name: string; size: number; mime?: string }
 /** Files this receive session finished, with the name they ended up under. */
 let receivedFiles: { name: string; savedAs: string; size: number }[] = [];
 let longTransferHintShown = false;
+const fileBarEls = new Map<number, HTMLElement>();
+
+function setFileBar(fileId: number, fraction: number, state: "" | "verifying" | "ok" = ""): void {
+  const bar = fileBarEls.get(fileId);
+  if (!bar) return;
+  bar.classList.toggle("verifying", state === "verifying");
+  bar.classList.toggle("ok", state === "ok");
+  (bar.firstElementChild as HTMLElement).style.width = `${Math.max(0, Math.min(1, fraction)) * 100}%`;
+}
+
+/* ─── connection stepper ─── */
+const STEPS = ["connect", "link", "transfer", "verify"] as const;
+type Step = (typeof STEPS)[number];
+const stepEls = new Map<Step, HTMLElement>(
+  STEPS.map((k) => [k, document.querySelector<HTMLElement>(`#steps [data-step="${k}"]`)!]),
+);
+let currentStep: Step | "done" = "connect";
+
+function setStep(step: Step | "done", failed = false): void {
+  const idx = step === "done" ? STEPS.length : STEPS.indexOf(step);
+  // Steps only move forward within a transfer (late events can't rewind it).
+  const curIdx = currentStep === "done" ? STEPS.length : STEPS.indexOf(currentStep);
+  if (!failed && idx < curIdx) return;
+  currentStep = step;
+  STEPS.forEach((k, i) => {
+    const el = stepEls.get(k)!;
+    el.classList.toggle("done", i < idx);
+    el.classList.toggle("active", i === idx && !failed);
+    el.classList.toggle("failed", i === idx && failed);
+  });
+}
 const fileStatusEls = new Map<number, HTMLElement>();
 
 function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
@@ -1077,9 +1140,11 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       const filesDone = manifestFiles.filter((f) => fileStatusEls.get(f.fileId)?.classList.contains("ok")).length;
       progressFiles.textContent = `${filesDone} / ${manifestFiles.length || sentFiles.length} files`;
       // Update the currently-transferring file as "sending"/"receiving".
+      setStep("transfer");
       const inFlight = fileStatusEls.get(e.fileId);
       if (inFlight && !inFlight.classList.contains("ok")) {
-        inFlight.textContent = "in flight";
+        inFlight.textContent = `${Math.floor((e.bytesTransferred / Math.max(1, e.fileSize)) * 100)}%`;
+        setFileBar(e.fileId, e.bytesTransferred / Math.max(1, e.fileSize));
       }
       // Long transfers die if the device sleeps or the tab closes: say so once.
       if (!longTransferHintShown && isFinite(e.etaSeconds) && e.etaSeconds > 10 * 60) {
@@ -1091,6 +1156,8 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       break;
     }
     case "verifying": {
+      setStep("verify");
+      setFileBar(e.fileId, e.fileSize > 0 ? e.bytesDone / e.fileSize : 1, "verifying");
       const el = fileStatusEls.get(e.fileId);
       if (el) {
         el.textContent = e.fileSize > 0 && e.bytesDone > 0
@@ -1104,6 +1171,7 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       if (entry && session?.role === "receive") {
         receivedFiles.push({ name: entry.name, savedAs: e.savedAs ?? entry.name, size: entry.size });
       }
+      setFileBar(e.fileId, 1, "ok");
       const el = fileStatusEls.get(e.fileId);
       if (el) {
         el.textContent = e.verified ? "✓ verified" : "✓ sent";
@@ -1116,7 +1184,11 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       }
       break;
     }
+    case "started":
+      setStep("transfer");
+      break;
     case "complete":
+      setStep("done");
       progressFill.style.width = "100%";
       progressHeadline.textContent = `${humanBytes(manifestFiles.reduce((n, f) => n + f.size, 0))} done`;
       break;
@@ -1142,9 +1214,16 @@ function renderActiveFilelist(files: { fileId: number; name: string; size: numbe
     const status = document.createElement("span");
     status.className = "file-status";
     status.textContent = "queued";
-    li.append(icon, name, size, status);
+    const bar = document.createElement("span");
+    bar.className = "file-bar";
+    bar.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = "file-bar-fill";
+    bar.append(fill);
+    li.append(icon, name, size, status, bar);
     activeFilelist.appendChild(li);
     fileStatusEls.set(f.fileId, status);
+    fileBarEls.set(f.fileId, bar);
   }
 }
 
@@ -1288,6 +1367,7 @@ function setDoneState(kind: "ok" | "failed", title: string, subtitle: string): v
   doneSub.textContent = subtitle;
   doneSaves.classList.add("hidden");
   doneFiles.innerHTML = "";
+  doneRetry.classList.add("hidden");
 }
 
 function onTransferDone(subtitle: string): void {
@@ -1299,8 +1379,165 @@ function onTransferDone(subtitle: string): void {
 
 function onTransferFailed(message: string): void {
   setDoneState("failed", "Transfer didn't finish", message);
+  doneRetry.textContent = lastAttempt?.role === "send" ? "Try again with a new code" : "Enter a new code";
+  doneRetry.classList.toggle("hidden", !lastAttempt);
   goto("done");
 }
+
+/* ─── recent transfers (localStorage, this device only) ─── */
+
+interface HistoryEntry {
+  at: number;
+  dir: "sent" | "received";
+  ok: boolean;
+  files: { name: string; size: number }[];
+  totalBytes: number;
+  peer: string;
+  seconds: number;
+  note?: string;
+}
+
+const HISTORY_KEY = "dropbeam.history";
+const HISTORY_MAX = 20;
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? (parsed as HistoryEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(list: HistoryEntry[]): void {
+  try {
+    if (list.length) localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX)));
+    else localStorage.removeItem(HISTORY_KEY);
+  } catch { /* storage full / blocked: history is best-effort */ }
+}
+
+/** Only transfers that got as far as a file list are worth remembering. */
+function recordHistory(s: Session, ok: boolean, note?: string): void {
+  if (!manifestFiles.length) return;
+  const files = manifestFiles.map((f) => ({ name: f.name, size: f.size }));
+  const entry: HistoryEntry = {
+    at: Date.now(),
+    dir: s.role === "send" ? "sent" : "received",
+    ok,
+    files,
+    totalBytes: files.reduce((n, f) => n + f.size, 0),
+    peer: s.peerName,
+    seconds: Math.round((Date.now() - s.startedAt) / 1000),
+    ...(note ? { note } : {}),
+  };
+  saveHistory([entry, ...loadHistory()]);
+  renderHistory();
+}
+
+function timeAgo(at: number): string {
+  const sec = Math.round((Date.now() - at) / 1000);
+  if (sec < 60) return "just now";
+  if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} h ago`;
+  return new Date(at).toLocaleDateString();
+}
+
+const historySection = $<HTMLElement>("#history");
+const historyList = $<HTMLUListElement>("#history-list");
+
+function renderHistory(): void {
+  const list = loadHistory();
+  historySection.classList.toggle("hidden", list.length === 0);
+  historyList.innerHTML = "";
+  for (const h of list.slice(0, 8)) {
+    const li = document.createElement("li");
+    const dir = document.createElement("span");
+    dir.className = `history-dir ${h.dir}`;
+    dir.textContent = h.dir === "sent" ? "\u2191" : "\u2193";
+    dir.title = h.dir === "sent" ? "Sent" : "Received";
+    const main = document.createElement("span");
+    main.className = "history-main";
+    const names = document.createElement("div");
+    names.className = "history-files";
+    const first = h.files[0]?.name ?? "files";
+    names.textContent = h.files.length > 1 ? `${first} + ${h.files.length - 1} more` : first;
+    names.title = h.files.map((f) => f.name).join("\n");
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    const who = h.peer ? `${h.dir === "sent" ? "to" : "from"} ${h.peer} \u00b7 ` : "";
+    meta.textContent = `${humanBytes(h.totalBytes)} \u00b7 ${who}${timeAgo(h.at)}`;
+    if (h.note) meta.title = h.note;
+    main.append(names, meta);
+    const res = document.createElement("span");
+    res.className = `history-result ${h.ok ? "ok" : "fail"}`;
+    res.textContent = h.ok ? "\u2713 done" : "\u2715 failed";
+    if (h.note) res.title = h.note;
+    li.append(dir, main, res);
+    historyList.appendChild(li);
+  }
+}
+
+$<HTMLButtonElement>("#history-clear").addEventListener("click", () => {
+  saveHistory([]);
+  renderHistory();
+});
+renderHistory();
+
+/** What the user last tried, so "Try again" can repeat it. */
+let lastAttempt: { role: "send"; files: File[]; passphrase: string | undefined } | { role: "receive" } | null = null;
+
+const doneRetry = $<HTMLButtonElement>("#done-retry");
+doneRetry.addEventListener("click", () => {
+  const a = lastAttempt;
+  if (!a) return;
+  if (a.role === "send") {
+    void startSend(a.files, a.passphrase);
+  } else {
+    // The sender's room closes when a transfer fails, so a fresh code is needed.
+    // Keep the passphrase and chosen folder; clear only the code.
+    goto("recv-pick");
+    recvCodeInput.value = "";
+    updateRecvButton();
+    recvCodeInput.focus();
+  }
+});
+
+/* ─── share code expiry ─── */
+const shareExpiry = $<HTMLElement>("#share-expiry");
+const shareRenew = $<HTMLButtonElement>("#share-renew");
+let expiryTimer: number | null = null;
+
+function startExpiryCountdown(s: Session, expiresAt: number): void {
+  stopExpiryCountdown();
+  shareExpiry.classList.remove("expired");
+  shareRenew.classList.add("hidden");
+  const tick = (): void => {
+    const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+    if (left > 0) {
+      const m = Math.floor(left / 60);
+      shareExpiry.textContent = `Code expires in ${m}:${String(left % 60).padStart(2, "0")}`;
+      return;
+    }
+    stopExpiryCountdown();
+    shareExpiry.textContent = "This code has expired.";
+    shareExpiry.classList.add("expired");
+    shareRenew.classList.remove("hidden");
+    waitingText.textContent = "Nobody joined in time.";
+    if (session === s) cancelActive();
+  };
+  tick();
+  expiryTimer = window.setInterval(tick, 1000);
+}
+
+function stopExpiryCountdown(): void {
+  if (expiryTimer !== null) clearInterval(expiryTimer);
+  expiryTimer = null;
+}
+
+shareRenew.addEventListener("click", () => {
+  if (lastAttempt?.role === "send") void startSend(lastAttempt.files, lastAttempt.passphrase);
+});
 
 /** Names currently listed in the done screen's save list (for Clear / Share all). */
 let savesShown: string[] = [];
@@ -1743,7 +1980,12 @@ const PRIVACY_HTML = `
 </ul>
 
 <h3>Cookies, analytics, tracking</h3>
-<p><strong>None.</strong> The only thing stored in your browser is a random device id in <code>localStorage</code> (so we can show the receiver your friendly device name) and your chosen connection mode. No cookies, no third-party analytics, no fingerprinting.</p>
+<p><strong>None.</strong> No cookies, no third-party analytics, no fingerprinting. What your browser keeps, on this device only:</p>
+<ul>
+  <li>A random device id and your chosen connection mode (<code>localStorage</code>).</li>
+  <li>A short list of your recent transfers: file names, sizes, the other device's name, and time. Never file contents, and never sent anywhere. Tap <em>Clear</em> under "Recent transfers" to erase it.</li>
+  <li>If you receive without choosing a folder, the files themselves sit in the browser's private storage until you save them, tap Clear, or 24 hours pass.</li>
+</ul>
 
 <h3>TURN relays</h3>
 <p>If both peers are behind strict NATs, a TURN relay may be used as a last resort. Even then the bytes are still end-to-end encrypted — the relay can see <em>that</em> bytes are flowing but can't read them.</p>
