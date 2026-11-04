@@ -12,8 +12,14 @@
 
 import { DROPBEAM_MAGIC, PROTOCOL_VERSION } from "./index.js";
 
-/** Default chunk size — 64 KiB. Datachannel max message is ~256 KiB; we stay well under. */
-export const DEFAULT_CHUNK_SIZE = 64 * 1024;
+/**
+ * Default chunk payload size: 64 KiB minus 64 bytes. A frame is the 16-byte
+ * header + payload (+ 28 bytes IV/tag when encrypted), and the whole message
+ * must fit in 64 KiB — the DataChannel max-message-size every WebRTC stack
+ * guarantees when the peer doesn't advertise a larger one. A plain 64 KiB
+ * payload overflowed that by 16–44 bytes.
+ */
+export const DEFAULT_CHUNK_SIZE = 64 * 1024 - 64;
 
 /** High-water mark before pausing reads to respect bufferedAmount. */
 export const DEFAULT_BUFFER_HIGH_WATER = 4 * 1024 * 1024;
@@ -83,6 +89,17 @@ export interface TransferComplete {
   transferId: string;
 }
 
+/**
+ * Receiver → sender: every file has been fully written (and closed) on the
+ * receiving side. The sender must not report success or tear down the
+ * connection before this arrives — `file-end` / `complete` travel on the
+ * control channel, which is *not* ordered with respect to the data lanes.
+ */
+export interface TransferCompleteAck {
+  type: "complete-ack";
+  transferId: string;
+}
+
 export interface TransferAbort {
   type: "abort";
   transferId: string;
@@ -115,6 +132,7 @@ export type ControlMsg =
   | FileEnd
   | ChunkAck
   | TransferComplete
+  | TransferCompleteAck
   | TransferAbort
   | PauseMsg
   | ResumeMsg

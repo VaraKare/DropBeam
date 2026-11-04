@@ -70,6 +70,8 @@ export interface ReceiveOptions {
         kind: "fsaccess";
         directory: FileSystemDirectoryHandle;
         createSubdirectories?: boolean;
+        /** `directory` is OPFS: flatten folder paths and refuse transfers over quota. */
+        browserStorage?: boolean;
       };
 }
 
@@ -172,6 +174,7 @@ export class WorkerTransferHost {
                 ...(sinkConfig.createSubdirectories !== undefined
                   ? { createSubdirectories: sinkConfig.createSubdirectories }
                   : {}),
+                ...(sinkConfig.browserStorage ? { browserStorage: true } : {}),
               }
             : { kind: "proxy" },
       };
@@ -220,6 +223,18 @@ export class WorkerTransferHost {
         if (b) {
           b.lowWater = msg.bufferedAmountLowThreshold;
           b.dc.bufferedAmountLowThreshold = msg.bufferedAmountLowThreshold;
+          // The worker's bufferedAmount is a cached copy that only refreshes on
+          // sends / bufferedamountlow events. If the real buffer has *already*
+          // dropped below the new threshold, no event will ever fire, and a
+          // worker waiting in waitForDrain() would hang forever (this stalled
+          // every transfer right before "complete"). Report the truth now.
+          this.worker.postMessage({
+            type: "ch:state",
+            channelId: msg.channelId,
+            readyState: b.dc.readyState,
+            bufferedAmount: b.dc.bufferedAmount,
+            bufferedAmountLow: b.dc.bufferedAmount <= msg.bufferedAmountLowThreshold,
+          } satisfies M2WMessage);
         }
         break;
       }

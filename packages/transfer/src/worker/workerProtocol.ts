@@ -59,6 +59,8 @@ export interface M2W_StartReceive {
         /** `FileSystemDirectoryHandle` — structured-cloneable into the worker. */
         directory: unknown;
         createSubdirectories?: boolean;
+        /** Directory is the browser's private storage (OPFS): flatten paths + check quota. */
+        browserStorage?: boolean;
       };
 }
 

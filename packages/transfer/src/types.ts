@@ -1,9 +1,9 @@
 /**
- * Runtime-agnostic interfaces. The transfer engine never imports `werift`
- * or browser globals directly — it only sees these abstractions.
+ * Runtime-agnostic interfaces. The transfer engine never touches browser
+ * globals directly — it only sees these abstractions.
  *
- * On the browser: thin adapter around native `RTCPeerConnection`.
- * On Node: thin adapter around `werift`'s `RTCPeerConnection`.
+ * In the browser: a worker-side proxy over the main thread's native
+ * `RTCPeerConnection`. In tests: the in-memory pair (`inMemoryPair.ts`).
  */
 
 export type IceCandidate = unknown;
@@ -27,12 +27,27 @@ export interface FileSink {
   /** Called once before any chunks. May reject (e.g. out of disk). */
   begin(file: { id: number; name: string; size: number; mime?: string; relativePath?: string }, resumeOffset: number): Promise<void>;
   write(chunkOffset: number, bytes: Uint8Array): Promise<void>;
-  /** Called when sender signals end-of-file with the full sha256. */
-  finish(sha256: string): Promise<void>;
+  /**
+   * Called once every byte has been written. May move the data to its final
+   * location (e.g. rename a partial file) and report the name it ended up with.
+   */
+  finish(sha256: string): Promise<void | { savedAs?: string }>;
   abort(reason: string): Promise<void>;
+  /**
+   * Optional: stream the finished file back so the receiver can verify its
+   * sha256 against the sender's. Called after `finish()`.
+   */
+  readBack?(): AsyncIterable<Uint8Array>;
+  /** Optional: remove the finished file (used when verification fails). */
+  discard?(): Promise<void>;
 }
 
 export interface FileSinkFactory {
+  /**
+   * Optional: return an error string if `bytesNeeded` won't fit (checked before
+   * accepting a transfer, so we fail up front instead of at 80 %).
+   */
+  checkCapacity?(bytesNeeded: number): Promise<string | null>;
   /** Returns the byte offset to resume from (0 = start). */
   resumeOffsetFor(file: { id: number; name: string; size: number; relativePath?: string }): Promise<number>;
   open(file: { id: number; name: string; size: number; mime?: string; relativePath?: string }): Promise<FileSink>;
@@ -54,7 +69,17 @@ export type TransferEvent =
   | { type: "manifest"; transferId: string; files: { id: number; name: string; size: number }[]; totalBytes: number }
   | { type: "started"; transferId: string }
   | { type: "progress"; transferId: string } & ProgressEvent
-  | { type: "file-done"; transferId: string; fileId: number; sha256: string }
+  | { type: "verifying"; transferId: string; fileId: number; bytesDone: number; fileSize: number }
+  | {
+      type: "file-done";
+      transferId: string;
+      fileId: number;
+      sha256: string;
+      /** True when the receiver re-read the file and the sha256 matched. */
+      verified?: boolean;
+      /** Final name on disk, if the sink had to rename it (e.g. "photo (1).jpg"). */
+      savedAs?: string;
+    }
   | { type: "complete"; transferId: string }
   | { type: "error"; transferId: string; error: Error }
   | { type: "paused"; transferId: string }

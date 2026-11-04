@@ -13,6 +13,7 @@ import {
   type FileSink,
   type FileSinkFactory,
   type FileSource,
+  type TransferEvent,
 } from "../src/index.ts";
 
 function memSource(id: number, name: string, bytes: Uint8Array): FileSource {
@@ -30,6 +31,11 @@ class MemSinkFactory implements FileSinkFactory {
   buffers = new Map<number, Buffer>();
   bytesWritten = new Map<number, number>();
   shas = new Map<number, string>();
+  /** Writes that landed after the sink was finished (= data that would be lost on disk). */
+  writesAfterFinish = 0;
+  /** Flip a byte in every write to this file id (simulates on-disk corruption). */
+  corruptFileId: number | null = null;
+  discarded = new Set<number>();
   /** Pre-seed bytes for resume tests. */
   prefilled = new Map<number, Buffer>();
 
@@ -45,11 +51,17 @@ class MemSinkFactory implements FileSinkFactory {
     if (pre) pre.copy(buf, 0);
     this.buffers.set(file.id, buf);
     this.bytesWritten.set(file.id, pre?.byteLength ?? 0);
+    let finished = false;
     return {
       async begin(_, off) {
         if (off > (fac.bytesWritten.get(file.id) ?? 0)) fac.bytesWritten.set(file.id, off);
       },
       async write(offset, bytes) {
+        if (finished) fac.writesAfterFinish++;
+        if (fac.corruptFileId === file.id && bytes.byteLength) {
+          bytes = new Uint8Array(bytes);
+          bytes[0] = bytes[0]! ^ 0xff;
+        }
         bytes.forEach((b, i) => {
           buf[offset + i] = b;
         });
@@ -57,7 +69,14 @@ class MemSinkFactory implements FileSinkFactory {
         if (end > (fac.bytesWritten.get(file.id) ?? 0)) fac.bytesWritten.set(file.id, end);
       },
       async finish(sha) {
+        finished = true;
         fac.shas.set(file.id, sha);
+      },
+      async *readBack() {
+        yield new Uint8Array(buf);
+      },
+      async discard() {
+        fac.discarded.add(file.id);
       },
       async abort() {},
     };
@@ -70,14 +89,18 @@ async function runOnce(opts: {
   prefill?: Map<number, Buffer>;
   chunkSize?: number;
   lanes?: number;
+  dataLaneLatencyMs?: number;
+  factory?: MemSinkFactory;
+  events?: TransferEvent[];
 }): Promise<MemSinkFactory> {
-  const { a, b } = makeInMemoryPair();
-  const factory = new MemSinkFactory();
+  const { a, b } = makeInMemoryPair({ dataLaneLatencyMs: opts.dataLaneLatencyMs });
+  const factory = opts.factory ?? new MemSinkFactory();
   if (opts.prefill) factory.prefilled = opts.prefill;
 
   const recv = new TransferReceiver(b, {
     sinkFactory: factory,
     encryptionPassphrase: opts.passphrase,
+    onEvent: (e) => opts.events?.push(e),
   });
   recv.attach();
   const done = recv.done();
@@ -90,12 +113,109 @@ async function runOnce(opts: {
   sender.prepareChannels();
 
   const sources = opts.files.map((f) => memSource(f.id, f.name, f.bytes));
-  await sender.send("tx-1", sources);
-  await done;
+  await Promise.all([sender.send("tx-1", sources), done]);
   return factory;
 }
 
 describe("transfer engine", () => {
+  test("receiver re-reads and verifies each file's sha256", async () => {
+    const events: TransferEvent[] = [];
+    const bytes = randomBytes(100_000);
+    await runOnce({ files: [{ id: 1, name: "v.bin", bytes }], chunkSize: 8 * 1024, lanes: 3, events });
+    const done = events.find((e) => e.type === "file-done");
+    expect(done && done.type === "file-done" && done.verified).toBe(true);
+    expect(events.some((e) => e.type === "verifying")).toBe(true);
+  });
+
+  test("wrong passphrase aborts both sides with a clear reason", async () => {
+    const { a, b } = makeInMemoryPair();
+    const recv = new TransferReceiver(b, { sinkFactory: new MemSinkFactory(), encryptionPassphrase: "nope" });
+    recv.attach();
+    const done = recv.done();
+    const sender = new TransferSender(a, { encryptionPassphrase: "right", chunkSize: 8 * 1024, lanes: 2 });
+    sender.prepareChannels();
+    const sent = sender.send("tx-pp", [memSource(1, "s.bin", randomBytes(40_000))]);
+    const [r, se] = await Promise.allSettled([done, sent]);
+    expect(r.status === "rejected" && String(r.reason)).toMatch(/wrong-passphrase/);
+    expect(se.status === "rejected" && String(se.reason)).toMatch(/receiver aborted: wrong-passphrase/);
+  });
+
+  test("receiver refuses up front when the transfer won't fit", async () => {
+    const factory = new MemSinkFactory();
+    let asked = 0;
+    (factory as MemSinkFactory & { checkCapacity(n: number): Promise<string | null> }).checkCapacity = async (n) => {
+      asked = n;
+      return "insufficient-storage: needs 49 KB, this browser can store about 1 KB";
+    };
+    const { a, b } = makeInMemoryPair();
+    const recv = new TransferReceiver(b, { sinkFactory: factory });
+    recv.attach();
+    const done = recv.done();
+    const sender = new TransferSender(a, { chunkSize: 8 * 1024, lanes: 2 });
+    sender.prepareChannels();
+    const sent = sender.send("tx-cap", [memSource(1, "big.bin", randomBytes(50_000))]);
+    const [r, se] = await Promise.allSettled([done, sent]);
+    expect(asked).toBe(50_000);
+    expect(r.status === "rejected" && String(r.reason)).toMatch(/insufficient-storage/);
+    expect(se.status === "rejected" && String(se.reason)).toMatch(/receiver rejected: insufficient-storage/);
+    expect(factory.buffers.size).toBe(0); // nothing was opened / written
+  });
+
+  test("sender stops promptly when the receiver disappears before confirming", async () => {
+    const factory = new MemSinkFactory();
+    const origOpen = factory.open.bind(factory);
+    // Receiver gets stuck finishing the file (never acks), then its side closes.
+    factory.open = async (file) => {
+      const sink = await origOpen(file);
+      return { ...sink, finish: () => new Promise<void>(() => {}) };
+    };
+    const { a, b } = makeInMemoryPair();
+    const recv = new TransferReceiver(b, { sinkFactory: factory });
+    recv.attach();
+    recv.done().catch(() => {});
+    const sender = new TransferSender(a, { chunkSize: 8 * 1024, lanes: 2 });
+    sender.prepareChannels();
+    const started = Date.now();
+    const sent = sender.send("tx-gone", [memSource(1, "x.bin", randomBytes(20_000))]);
+    setTimeout(() => b.close(), 50);
+    const [r] = await Promise.allSettled([sent]);
+    expect(r.status === "rejected" && String(r.reason)).toMatch(/control channel closed/);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  test("corrupted data fails the integrity check and is discarded", async () => {
+    const factory = new MemSinkFactory();
+    factory.corruptFileId = 1;
+    const run = runOnce({
+      files: [{ id: 1, name: "bad.bin", bytes: randomBytes(30_000) }],
+      chunkSize: 8 * 1024,
+      lanes: 2,
+      factory,
+    });
+    await expect(run).rejects.toThrow(/integrity-check-failed/);
+    expect(factory.discarded.has(1)).toBe(true);
+  });
+
+  test("control messages overtaking data lanes don't truncate files", async () => {
+    // Real WebRTC doesn't order separate DataChannels relative to each other,
+    // so `file-end` / `complete` on the control channel can arrive before the
+    // last data frames. The receiver must wait for every byte.
+    const a = randomBytes(150_000);
+    const b = randomBytes(5);
+    const f = await runOnce({
+      files: [
+        { id: 1, name: "a.bin", bytes: a },
+        { id: 2, name: "b.txt", bytes: b },
+      ],
+      chunkSize: 16 * 1024,
+      lanes: 4,
+      dataLaneLatencyMs: 25,
+    });
+    expect(Buffer.compare(f.buffers.get(1)!, a)).toBe(0);
+    expect(Buffer.compare(f.buffers.get(2)!, b)).toBe(0);
+    expect(f.writesAfterFinish).toBe(0);
+  });
+
   test("transfers a small file with correct sha", async () => {
     const bytes = randomBytes(40_000);
     const expectedSha = createHash("sha256").update(bytes).digest("hex");

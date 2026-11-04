@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#0a0b10" />
-    <meta name="description" content="dropbeam — any size, any device, no cloud. Free peer-to-peer file transfer for big files (50 GB+), large videos, photos, folders. Send between phone, laptop, Mac, Windows, Android, iPad with no upload server, no account, end-to-end encrypted. Works on Wi-Fi without internet." />
+    <meta name="description" content="dropbeam — any size, any device, no cloud. Free peer-to-peer file transfer for big files (50 GB+), large videos, photos, folders. Send between phone, laptop, Mac, Windows, Android, iPad with no upload server, no account, end-to-end encrypted. On the same Wi-Fi, files never leave your network." />
     <meta name="keywords" content="file transfer, big file transfer, large file transfer, send large files, send big files free, peer to peer file sharing, P2P file transfer, no upload limit file sharing, send files to phone from laptop, AirDrop alternative, send files Windows to Mac, WeTransfer alternative, encrypted file transfer, browser file transfer, share files without upload, instant file share, QR code file share, LAN file transfer, no signup file sharing" />
     <meta name="author" content="Vara Prasad Karewar" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
@@ -13,7 +13,7 @@
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:title" content="dropbeam · any size · any device · no cloud" />
-    <meta property="og:description" content="Free peer-to-peer file transfer. 50 GB+ files. Phone ↔ laptop, Mac ↔ Windows. Encrypted, no accounts, no upload servers. Works on the same Wi-Fi with no internet." />
+    <meta property="og:description" content="Free peer-to-peer file transfer. 50 GB+ files. Phone ↔ laptop, Mac ↔ Windows. Encrypted, no accounts, no upload servers. On the same Wi-Fi, files never leave your network." />
     <!--
       OG image. We ship /og.svg (editable). Twitter/LinkedIn want PNG; render
       a copy to /og.png before launch via:
@@ -31,7 +31,7 @@
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="dropbeam · any size · any device · no cloud" />
-    <meta name="twitter:description" content="Free P2P file transfer for big files. No upload server. Works on Wi-Fi with no internet." />
+    <meta name="twitter:description" content="Free P2P file transfer for big files. No upload server. Files stay on your Wi-Fi when both devices share it." />
     <meta name="twitter:image" content="/og.png" />
 
     <link rel="canonical" href="/" />
@@ -58,7 +58,7 @@
             "Peer-to-peer file transfer",
             "No size limit",
             "End-to-end encrypted",
-            "Works on LAN without internet",
+            "Same-Wi-Fi transfers stay on your network",
             "QR code pairing",
             "Bulk file sharing",
             "No accounts required"
@@ -130,6 +130,8 @@
       </div>
     </header>
 
+    <div id="config-banner" class="config-banner hidden" role="alert"></div>
+
     <main id="app">
       <!-- ─── STAGE: idle (pick a side) ─── -->
       <section data-stage="idle" class="stage active">
@@ -145,7 +147,7 @@
           <div class="tag-row">
             <span class="tag tag-yellow">📦 ANY SIZE · 50&nbsp;GB+ FINE</span>
             <span class="tag tag-mint">🔒 END-TO-END ENCRYPTED</span>
-            <span class="tag tag-coral">📡 WORKS OFFLINE ON LAN</span>
+            <span class="tag tag-coral">📡 STAYS ON YOUR WI-FI</span>
             <span class="tag tag-lilac">🎯 BULK SHARE</span>
           </div>
         </div>
@@ -159,7 +161,7 @@
             </span>
             <span class="mode-text">
               <span class="mode-title">Same Wi-Fi <span class="info-btn" role="button" tabindex="0" data-info="lan" aria-label="What is Same Wi-Fi mode?"></span></span>
-              <span class="mode-sub">Works without internet</span>
+              <span class="mode-sub">Files stay on your network</span>
             </span>
           </button>
           <button id="mode-net" class="mode" role="tab" aria-selected="false">
@@ -219,9 +221,18 @@
           </li>
           <li>
             <span class="feat-ico">📡</span>
-            <div><b>Same Wi-Fi works offline.</b> Two devices on one router don't need an internet connection.</div>
+            <div><b>Same Wi-Fi stays local.</b> On one router, your files go device to device and never touch the internet.</div>
           </li>
         </ul>
+
+        <section id="history" class="history hidden" aria-labelledby="history-title">
+          <div class="history-head">
+            <h3 id="history-title">Recent transfers</h3>
+            <button id="history-clear" class="chip-btn" type="button">Clear</button>
+          </div>
+          <ul id="history-list" class="history-list"></ul>
+          <p class="muted small">Kept only on this device: file names and sizes, never contents.</p>
+        </section>
 
         <div class="learn-more-row">
           <button class="learn-more" type="button" data-blog>
@@ -258,6 +269,7 @@
 
         <ul id="send-filelist" class="filelist"></ul>
         <div id="send-totals" class="totals hidden"></div>
+        <div id="send-warn" class="notice hidden" role="note"></div>
 
         <div class="passphrase-row">
           <details class="passphrase-details">
@@ -309,6 +321,8 @@
             <p class="muted small">
               Tell them the code, or have them scan the QR on the right.
             </p>
+            <p id="share-expiry" class="share-expiry muted small" aria-live="polite"></p>
+            <button id="share-renew" class="chip-btn hidden" type="button">Get a new code</button>
           </div>
 
           <div class="qr-block">
@@ -353,7 +367,15 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
               Choose folder…
             </button>
-            <span id="recv-dirname" class="folder-name muted">No folder chosen (defaults to browser downloads)</span>
+            <span id="recv-dirname" class="folder-name muted">No folder chosen. Files are held in this browser, then you tap Save.</span>
+          </div>
+          <p id="recv-storage" class="muted small hidden"></p>
+          <div id="recv-leftovers" class="notice hidden">
+            <span id="recv-leftovers-text"></span>
+            <span class="notice-actions">
+              <button id="recv-leftovers-show" class="chip-btn" type="button">Show</button>
+              <button id="recv-leftovers-clear" class="chip-btn" type="button">Clear</button>
+            </span>
           </div>
         </div>
 
@@ -384,6 +406,13 @@
           </button>
           <h2 id="active-title" class="stage-title">Connecting…</h2>
         </div>
+
+        <ol id="steps" class="steps" aria-label="Transfer progress">
+          <li data-step="connect"><span class="step-dot"></span><span class="step-label">Connecting</span></li>
+          <li data-step="link"><span class="step-dot"></span><span class="step-label">Secure link</span></li>
+          <li data-step="transfer"><span class="step-dot"></span><span class="step-label">Transferring</span></li>
+          <li data-step="verify"><span class="step-dot"></span><span class="step-label">Verified</span></li>
+        </ol>
 
         <div class="link-viz">
           <div class="link-end">
@@ -453,13 +482,22 @@
           <div class="done-check">
             <svg width="64" height="64" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"/>
-              <path d="m8 12 3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path id="done-icon-path" d="m8 12 3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </div>
           <h2 id="done-title" class="stage-title centered">Transfer complete</h2>
           <p id="done-sub" class="muted centered"></p>
+          <div id="done-saves" class="done-saves hidden">
+            <p id="done-saves-note" class="muted small"></p>
+            <ul id="done-files" class="filelist"></ul>
+            <div class="action-row centered">
+              <button id="done-share-all" class="secondary hidden" type="button">Share all…</button>
+              <button id="done-clear" class="secondary" type="button">Clear from this browser</button>
+            </div>
+          </div>
           <div class="action-row centered">
-            <button id="done-again" class="primary" type="button">Send something else</button>
+            <button id="done-retry" class="secondary hidden" type="button">Try again</button>
+            <button id="done-again" class="primary" type="button">Back to start</button>
           </div>
         </div>
       </section>

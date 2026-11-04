@@ -1,388 +1,149 @@
 # DropBeam
 
-Universal any-device-to-any-device file sharing. AirDrop / Quick Share /
-Snapdrop / WeTransfer rolled into one open protocol — browser-first,
-zero-account, end-to-end encrypted in transit (DTLS) with optional
-application-layer AES-GCM-256.
-
-**Phone → Laptop. Mac → Windows. Android → iPad. Any direction.** Files
-stream peer-to-peer in your browser. No upload server holds them, no
-size limit, no account. Works *without* internet when both devices are
-on the same Wi-Fi.
+Send files of any size between any two devices, straight from the browser.
+Phone → laptop, Mac → Windows, Android → iPad. No account, no app, no upload
+server: files go **peer-to-peer** over WebRTC, encrypted in transit (DTLS),
+with an optional passphrase for an extra AES-GCM-256 layer.
 
 ```
-Transport ladder (fastest → most compatible):
-
-  loopback          same host, in-memory
-  lan-quic          same LAN, Rust/QUIC binary (zero-RTT, TLS 1.3)
-  lan               same LAN, WebRTC DataChannels (host candidates)
-  wifi-direct       nearby, OS-native (MultipeerConnectivity / WifiP2p)
-  p2p-direct        cross-NAT, WebRTC (STUN hole-punch)
-  p2p-relayed       cross-NAT via TURN relay
+ Sender browser ──wss──▶ Signaling server ◀──wss── Receiver browser
+        │            (only introduces the two devices)          │
+        └══════════ WebRTC DataChannels: the files ═════════════┘
 ```
 
-## What's in the web app
+## What it does
 
-The `apps/web/` PWA is the universal frontend — any browser, any device.
+- **Any size.** The sender streams the file from disk in 64 KB pieces and
+  memory stays flat. The receiver writes straight to disk.
+- **Every file is verified.** The receiver re-reads each file and checks its
+  SHA-256 against the sender's before reporting success. A mismatch deletes the
+  file and fails loudly.
+- **Receive on anything.**
+  - Chrome or Edge on a computer can save straight into a folder you pick.
+  - Everywhere else (phones, Safari, Firefox), files land in the browser's
+    private storage, then you tap **Save**, or **Share → Save to Files** on
+    iPhone.
+  - Free space is checked first, so an oversized transfer is refused up front.
+- **Resumes.** If a transfer is interrupted, send it again and it continues from
+  where it stopped.
+- **Never overwrites.** A name clash saves as `photo (1).jpg`.
+- **Pairing:** a short code, a QR code or a link, plus copy and native share
+  buttons. The code expires after 30 minutes and you can get a new one.
+- **Two modes:**
+  - *Same Wi-Fi*: files never leave your network. The first handshake still
+    reaches the signaling server, unless you self-host on the LAN (below).
+  - *Anywhere*: STUN, plus TURN if you configure it.
+- **Built for real use:**
+  - a live connection stepper
+  - per-file progress
+  - size and keep-awake warnings for big transfers
+  - clear error messages with Try again
+  - a recent-transfers list (kept only on this device)
+  - installable as an app (PWA)
 
-- **Two-mode picker**: *Same Wi-Fi* (no internet, host-candidate WebRTC) or
-  *Anywhere* (STUN/TURN over the internet). Auto-detected from the host
-  the page is served from.
-- **QR + short code**: senders get both a typeable share code and a QR
-  encoding a deep-link URL. Receivers either type the code or scan with
-  their camera (Chrome on Android uses the native `BarcodeDetector` API).
-- **Deep-link auto-join**: `/?c=K7-9P3-MX2A` auto-fills the code and
-  jumps straight to the receive flow.
-- **Live transport badge**: shows whether the chosen WebRTC path ended up
-  as `LAN-direct · no internet`, `P2P-direct · encrypted`, or `TURN relayed`.
-- **Streaming to disk**: receivers pick a save folder (`showDirectoryPicker`
-  in Chrome/Edge) — files stream straight to disk, never held in memory.
-- **PWA installable**: works offline (app shell cached) once visited once.
-- **Drag, paste, click, share**: clipboard paste, drag-and-drop, native
-  Web Share, copy code, copy link.
+## Docs
 
----
+| Doc | What's in it |
+|---|---|
+| [docs/MAP.md](docs/MAP.md) | Project map: system diagram, transfer sequence, screens, every folder explained, where data lives |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | To-dos, manual + automated test plan, features to add, scaling to many users, Docker, caching, storage |
+| [docs/PRODUCT.md](docs/PRODUCT.md) | Who it's for, comparison with AirDrop / WeTransfer / Snapdrop and others, running costs, ads and other income, growth estimate |
+| [SETUP.md](SETUP.md) · [DEPLOY.md](DEPLOY.md) · [FORK.md](FORK.md) · [FEATURES.md](FEATURES.md) | Run locally · go live · contribute · feature list |
 
 ## Repo layout
 
 ```
-DropBeam/
-├── packages/
-│   ├── protocol/          — wire types (signaling + frame codec)
-│   ├── transfer/          — transfer engine (sender, receiver, QUIC transport, WASM core)
-│   └── transfer-core/     — Rust crate → WASM (sha256, AES-GCM, frame codec)
-├── apps/
-│   ├── web/               — Vite/TS PWA, the universal frontend
-│   ├── signaling/         — Bun WebSocket signaling server (also serves the web bundle when WEB_ROOT is set)
-│   ├── cli/               — Node/Bun CLI (dropbeam send / recv)
-│   ├── quic-relay/        — Rust/quinn QUIC binary (dropbeam-quic)
-│   ├── desktop/           — Tauri 2 desktop app (mDNS, tray, clipboard)
-│   ├── ios/               — Swift app (MultipeerConnectivity + WebRTC) — stub
-│   └── android/           — Kotlin app (WifiP2p + WebRTC) — stub
+apps/
+  web/          Vite + TypeScript web app (the product)
+  signaling/    Bun WebSocket server: rooms, codes, SDP/ICE relay, rate limits
+packages/
+  protocol/     Shared wire types: signaling messages, control messages, 16-byte frame header
+  transfer/     Transfer engine: sender, receiver, file sinks, Web Worker host, signaling client
 ```
 
----
+The earlier native, CLI, Rust/QUIC and desktop experiments live on the
+`archive/native` branch. They're not part of the web app.
 
-## Quick start
+## Run it locally
 
-### Prerequisites
-
-- **Bun** ≥ 1.0 — [bun.sh](https://bun.sh)
-- **Node.js** ≥ 20 (for `ws` / `werift` native deps)
-- **Rust** ≥ 1.78 + `wasm-pack` (for QUIC binary / WASM core, optional)
+Requires [Bun](https://bun.sh) 1.1+.
 
 ```bash
-git clone https://github.com/you/DropBeam && cd DropBeam
 bun install
+bun run dev:signaling   # terminal 1: ws://localhost:8787/ws
+bun run dev             # terminal 2: http://localhost:5173
 ```
 
-### 1 — Web app (the primary UX)
+Open the app in two tabs (or on two devices on your Wi-Fi via the network URL
+Vite prints). One sends, the other receives with the code.
 
-In one terminal:
-```bash
-bun run dev:signaling      # ws://0.0.0.0:8787/ws
-```
-In another:
-```bash
-bun run dev:web            # http://localhost:5173
-```
-Open the URL on both devices (same machine for a quick test). Click
-**Send**, drop a file, share the code or QR. On the other device click
-**Receive** and either type the code or scan the QR.
-
-### 1b — One-port LAN deploy (no internet anywhere)
-
-For the "two phones on a hotel Wi-Fi with no uplink" case, host the
-built web app from the signaling process itself so you only need one URL:
+**Fully offline on a LAN** (one port, no internet at all):
 
 ```bash
-bun run lan
-# → builds apps/web → dist, then starts signaling on :8787
-# → web app served at  http://<your-lan-ip>:8787/
-# → signaling WS at    ws://<your-lan-ip>:8787/ws
+bun run lan             # builds the web app and serves it from the signaling server
+# → open http://<your-lan-ip>:8787 on both devices
 ```
 
-The web app auto-detects that it's on a private IP and switches to LAN
-mode (no STUN servers, host-only ICE candidates).
+Browsers only allow saving files (and passphrase encryption) on `https://` or
+`localhost` pages. Over plain `http://<lan-ip>`, other devices can **send** but
+not **receive**; the app explains this on the receive screen. To receive on
+other devices too, put the server behind HTTPS on your LAN, for example Caddy
+with `tls internal`, or any reverse proxy with a local certificate.
 
-### 2 — CLI file transfer (WebRTC path)
+## Tests
 
 ```bash
-# Terminal A — receiver creates a room and prints a code
-dropbeam recv --signaling ws://localhost:8787/ws --out ./received
-
-# Terminal B — sender joins using that code
-dropbeam send --signaling ws://localhost:8787/ws --join-code "K7-9P3-MX2A" ./photo.jpg ./video.mp4
-
-# Or let sender create the room and wait for receiver
-dropbeam send --signaling ws://localhost:8787/ws ./file.zip
+bun test                # protocol, engine (incl. reordering, integrity, resume, aborts), signaling
+bun run typecheck
+bun run build           # production build of apps/web
 ```
 
-### 3 — QUIC direct LAN transfer (fastest)
-
-Build the binary once:
-```bash
-cd apps/quic-relay && cargo build --release
-# binary: apps/quic-relay/target/release/dropbeam-quic
-```
-
-Then transfer:
-```bash
-# Receiver machine
-dropbeam recv --quic --port 9898 --token my-secret --out ./received
-
-# Sender machine (same LAN)
-dropbeam send --quic --host 192.168.1.42 --port 9898 --token my-secret ./bigfile.iso
-```
-
-### 4 — Encrypted transfer (AES-GCM-256)
-
-```bash
-dropbeam recv --signaling ws://... --out ./recv --passphrase "hunter2"
-dropbeam send --signaling ws://... ./secret.zip --passphrase "hunter2"
-```
-
----
-
-## CLI reference
-
-```
-dropbeam send  --signaling <url> [OPTIONS] <file>...
-dropbeam recv  --signaling <url> --out <dir> [OPTIONS]
-
-# QUIC (skips signaling)
-dropbeam send  --quic --host <ip> --port <n> --token <tok> [--lanes 4] <file>...
-dropbeam recv  --quic --port <n> --token <tok> --out <dir>
-
-OPTIONS
-  --signaling <url>     Signaling server (or DROPBEAM_SIGNALING env var)
-  --join-code <code>    Join existing room
-  --passphrase <str>    AES-GCM-256 passphrase
-  --ttl <sec>           Room TTL (default 1800)
-  --adapter <name>      WebRTC adapter: auto (default) | node-dc | werift
-  --wasm/--no-wasm      Force WASM or TS crypto core
-  --out <dir>           Output directory (recv)
-  --lanes <n>           Parallel QUIC streams (default 4)
-  --transfer-id <id>    Resume ID
-```
-
----
-
-## Run tests
-
-```bash
-bun test                          # all unit + integration tests (26 tests)
-bun run e2e                       # end-to-end: signaling + full transfer round-trip
-```
-
-Individual package tests:
-```bash
-bun test packages/transfer        # transfer engine (sender/receiver/router)
-bun test apps/signaling           # signaling server (room codes, rate limiting, WS)
-```
-
----
-
-## Deploy web + signaling
-
-### Signaling on Northflank
-
-Use `apps/signaling/Dockerfile` as the Dockerfile path and `/` as the build
-context. The container listens on `PORT` and exposes `/healthz`, so configure
-the Northflank health check to hit:
-
-```text
-GET /healthz
-```
-
-The WebSocket endpoint is:
-
-```text
-wss://<your-northflank-domain>/ws
-```
-
-### Web frontend on Vercel
-
-The root `vercel.json` deploys `apps/web` as a Vite app:
-
-```text
-Install Command: bun install --frozen-lockfile
-Build Command:   bun run --cwd apps/web build
-Output Dir:      apps/web/dist
-```
-
-Set this Vercel environment variable before production deploys:
-
-```text
-VITE_SIGNALING_URL=wss://<your-northflank-domain>/ws
-```
-
----
-
-## Build native components (optional)
-
-### WASM crypto core
-
-```bash
-cd packages/transfer-core
-wasm-pack build --target bundler --out-dir pkg
-```
-
-The WASM module is imported automatically by `@dropbeam/transfer` with a
-pure-TypeScript fallback if the build is absent.
-
-### QUIC binary
-
-```bash
-cd apps/quic-relay
-cargo build --release
-# → target/release/dropbeam-quic
-# Place on PATH or next to the dropbeam CLI binary
-```
-
-### Tauri desktop app
-
-```bash
-cd apps/desktop
-npm install
-npx tauri build          # production bundle
-npx tauri dev            # dev mode
-```
-
-Requires Tauri 2 prerequisites: [tauri.app/v2/guides/prerequisites](https://tauri.app/v2/guides/prerequisites)
-
----
-
-## iOS app
-
-`apps/ios/DropBeam/` — Swift 5.9, iOS 15+
-
-```bash
-cd apps/ios/DropBeam
-pod install              # installs GoogleWebRTC
-open DropBeam.xcworkspace
-```
-
-Key classes:
-- `NearbyTransfer` — MultipeerConnectivity (same-LAN, AirDrop-style)
-- `WebRTCFallback` — GoogleWebRTC DataChannels (remote/cross-NAT)
-- `SignalingClient` — WebSocket room/SDP relay
-- `FileTransfer` — coordinator (picks transport, routes events)
-
----
-
-## Android app
-
-`apps/android/` — Kotlin, minSdk 26, Gradle 8
-
-```bash
-cd apps/android
-./gradlew assembleDebug
-```
-
-Dependencies: `stream-webrtc-android`, `okhttp3`, `kotlinx-coroutines`.
-
-Key classes:
-- `NearbyTransfer` — WifiP2pManager (WiFi Direct), raw TCP socket transfer
-- `WebRTCFallback` — WebRTC DataChannels via stream-webrtc-android
-- `SignalingClient` — OkHttp WebSocket + Kotlin Flow events
-- `FileTransfer` — coordinator
-
-Required manifest permissions: `NEARBY_WIFI_DEVICES`, `CHANGE_WIFI_STATE`, `INTERNET`.
-
----
-
-## Architecture
-
-### Frame format (binary, 16-byte header)
-
-```
- 0        1        2        3
- magic    ver      flags    reserved
- 0xDB     0x01     0bxxxxxx 0x00
-
- 4 ─── 7  : uint32 BE  fileId
- 8 ─── 11 : uint32 BE  chunkIndex
- 12 ── 15 : uint32 BE  payloadLen
- 16+      : payload (optionally AES-GCM encrypted)
-
-flags:
-  bit 0 = ENCRYPTED
-  bit 1 = LAST (final chunk of file)
-```
-
-### Smart router
-
-```
-sameHost?     → loopback
-sameLan+quic? → lan-quic   (Rust/quinn, UDP, TLS 1.3, zero-RTT)
-sameLan?      → lan        (WebRTC DataChannels)
-nearby?       → wifi-direct (OS-native: MPC / WifiP2p)
-directReach?  → p2p-direct  (WebRTC, STUN hole-punch)
-else          → p2p-relayed (WebRTC + TURN)
-```
-
-### WebRTC adapter fallback chain
-
-```
-node-datachannel (C++, libdatachannel)  ← fastest, requires native binary
-   ↓ if unavailable
-werift (pure TypeScript)                ← zero native deps, works everywhere
-```
-
-### Crypto core fallback chain
-
-```
-WASM (Rust: sha2 + aes-gcm crates)  ← hot path, ~10× faster
-   ↓ if WASM not bundled
-TypeScript (WebCrypto API)           ← universal fallback
-```
-
----
-
-## Fork / extend
-
-1. **Add a new transport**: implement `PeerConnection` interface in `packages/transfer/src/peer.ts`
-2. **Add a new signaling backend**: implement the wire types in `packages/protocol/src/signaling.ts`
-3. **Plug in TURN**: edit `iceServers` in `weriftAdapter.ts` / `nodeDCAdapter.ts` / iOS `WebRTCFallback.swift` / Android `WebRTCFallback.kt`
-4. **Custom frame format**: extend `packages/transfer-core/src/frame.rs` + `packages/protocol/src/transfer.ts`
-
----
+## Deploy
+
+The web app goes on Vercel. The signaling server needs a host that keeps
+WebSockets open (Koyeb, Render, Fly). Step by step in **[DEPLOY.md](DEPLOY.md)**.
+
+| Variable | Where | Required |
+|---|---|---|
+| `VITE_SIGNALING_URL` | Vercel (build time) | yes, e.g. `wss://your-signaling.example.com/ws` |
+| `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | Vercel (build time) | optional, for strict networks |
+| `PORT`, `HOST`, `ROOM_CAPACITY`, `MAX_ROOMS`, `WEB_ROOT` | signaling host | optional |
+
+## How a transfer works
+
+1. The sender creates a room and gets a short code. The receiver joins with it.
+2. The two browsers exchange WebRTC offers and ICE candidates through the
+   signaling server. Early candidates are queued and nothing is dropped.
+3. The sender opens one ordered **control** channel and four **data** lanes.
+   A manifest (names, sizes, optional encryption salt) goes first. The receiver
+   checks free space and asks to resume any partial files.
+4. Chunks go out with a 16-byte header: magic, version, flags, file id and
+   chunk index. Each lane respects backpressure.
+5. Because the lanes aren't ordered relative to each other, the receiver
+   finishes a file only once **every byte** has arrived. It then re-reads the
+   file, verifies the SHA-256 and sends `complete-ack`. The sender reports
+   success only after that ack.
+
+All chunking, hashing and encryption run in a Web Worker, so the page stays
+responsive.
 
 ## Privacy
 
-DropBeam **cannot see your files**. They go peer-to-peer over a
-DTLS-encrypted WebRTC data channel; the signaling server only relays
-opaque SDP/ICE handshake blobs to introduce the two devices. No
-upload bucket, no cache, no analytics. Add the optional passphrase
-and every chunk is also AES-GCM-256 encrypted in your browser before
-it leaves the device.
-
-The user-facing privacy statement is in-app — open the web UI and
-click "Privacy" in the footer.
-
-## More docs
-
-- **[SETUP.md](./SETUP.md)** — **start here.** Plain-English fork →
-  install → run → first-transfer walkthrough.
-- **[FEATURES.md](./FEATURES.md)** — comprehensive feature catalog
-  (use this as the source-of-truth for building marketing pages, app
-  listings, or mobile screens).
-- **[DEPLOY.md](./DEPLOY.md)** — production deploy: Vercel for the web
-  app, Koyeb (or Render / Fly.io) for the signaling server. Includes
-  the Vercel CLI walkthrough and a section on running ads honestly.
-- **[FORK.md](./FORK.md)** — coding conventions and where to add new
-  transports / brandings / self-hosted deploys.
+DropBeam can't see your files. The signaling server only relays the handshake
+between the two browsers, and it rate-limits by IP address. There are no
+analytics and no cookies. On your own device the browser keeps a random device
+id, your mode choice, and a recent-transfers list (names and sizes only, with
+a Clear button). Files received into browser storage are deleted after you
+clear them or after 24 hours. The full statement is on the in-app Privacy page.
 
 ## Mission
 
-If this ever earns money — ads, freemium API, office tier — **30 %
-is donated to people in need** (recipients voted on quarterly, receipts
-posted publicly) and **70 % is reinvested** in infrastructure, dev, and
+If this ever earns money (ads, a freemium API, an office tier), **30% is
+donated to people in need**. Recipients are voted on quarterly and receipts are
+posted publicly. **70% is reinvested** in infrastructure, development and
 keeping the free tier alive. Built by Vara Prasad Karewar
-([@VaraKare](https://github.com/VaraKare) · [@the.varaprasad](https://instagram.com/the.varaprasad)).
+([@VaraKare](https://github.com/VaraKare)).
 
 ## License
 
-MIT — see header in each source file. Use it, fork it, rebrand it,
-ship it commercially. Just don't sue us if a file gets corrupted.
+MIT. Use it, fork it, rebrand it, ship it commercially.

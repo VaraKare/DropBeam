@@ -24,15 +24,50 @@ type ConnectionMode = "lan" | "net";
 
 interface AppEnv {
   signalingUrl: string;
+  /** Human-readable reason the app can't connect, or null when configured. */
+  configError: string | null;
+  /** ICE servers used in "Anywhere" mode (STUN + optional TURN from env). */
+  netIceServers: RTCIceServer[];
+  /** ICE servers for the current mode ([] in LAN mode → host candidates only). */
   iceServers: RTCIceServer[];
+  /** True when a TURN relay is configured. */
+  hasTurn: boolean;
   /** True when the page is being served from a same-origin signaling host (LAN-only deployment). */
   sameOrigin: boolean;
   /** Best-guess current mode. */
   mode: ConnectionMode;
 }
 
+function readIceServers(): { servers: RTCIceServer[]; hasTurn: boolean } {
+  const servers: RTCIceServer[] = [
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] },
+  ];
+  const turnUrls = (import.meta.env.VITE_TURN_URLS ?? "")
+    .split(",")
+    .map((u) => u.trim())
+    .filter(Boolean);
+  if (turnUrls.length) {
+    servers.push({
+      urls: turnUrls,
+      username: import.meta.env.VITE_TURN_USERNAME ?? "",
+      credential: import.meta.env.VITE_TURN_CREDENTIAL ?? "",
+    });
+  }
+  return { servers, hasTurn: turnUrls.length > 0 };
+}
+
+/** Accepts ws(s):// as-is and rewrites http(s):// → ws(s)://; appends /ws if no path given. */
+function normalizeSignalingUrl(raw: string): string {
+  const u = new URL(raw.trim());
+  if (u.protocol === "https:") u.protocol = "wss:";
+  else if (u.protocol === "http:") u.protocol = "ws:";
+  if (u.protocol !== "ws:" && u.protocol !== "wss:") throw new Error(`unsupported protocol ${u.protocol}`);
+  if (u.pathname === "/" || u.pathname === "") u.pathname = "/ws";
+  return u.toString();
+}
+
 function detectEnv(): AppEnv {
-  const override = (import.meta.env.VITE_SIGNALING_URL as string | undefined) ?? null;
+  const override = import.meta.env.VITE_SIGNALING_URL?.trim() || null;
   const host = location.hostname;
   const isPrivateHost =
     host === "localhost" ||
@@ -44,23 +79,32 @@ function detectEnv(): AppEnv {
 
   const sameOrigin = !override && isPrivateHost;
   const wsProto = location.protocol === "https:" ? "wss" : "ws";
-  const signalingUrl = override
-    ?? (sameOrigin
-      ? `${wsProto}://${location.host}/ws`
-      : `ws://${host || "localhost"}:8787/ws`);
+  let signalingUrl = "";
+  let configError: string | null = null;
 
-  const iceServers: RTCIceServer[] = [
-    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-    { 
-      urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443"], 
-      username: "openrelayproject", 
-      credential: "openrelayproject" 
+  if (override) {
+    try {
+      signalingUrl = normalizeSignalingUrl(override);
+      if (location.protocol === "https:" && signalingUrl.startsWith("ws://")) {
+        configError = `VITE_SIGNALING_URL is ${signalingUrl}, but this page is served over HTTPS, so the browser will block it. Use a wss:// URL.`;
+      }
+    } catch {
+      configError = `VITE_SIGNALING_URL ("${override}") isn't a valid ws:// or wss:// URL.`;
     }
-  ];
+  } else if (sameOrigin) {
+    signalingUrl = `${wsProto}://${location.host}/ws`;
+  } else {
+    configError =
+      "This deployment has no signaling server configured. Set VITE_SIGNALING_URL (e.g. wss://your-signaling.onrender.com/ws) in your hosting provider's environment variables and redeploy.";
+  }
 
+  const { servers, hasTurn } = readIceServers();
   return {
     signalingUrl,
-    iceServers,
+    configError,
+    netIceServers: servers,
+    iceServers: servers,
+    hasTurn,
     sameOrigin,
     mode: sameOrigin ? "lan" : "net",
   };
@@ -75,11 +119,25 @@ const DEVICE: DeviceInfo = {
   userAgent: navigator.userAgent,
 };
 
+/**
+ * `crypto.randomUUID()` only exists in secure contexts (https / localhost).
+ * A LAN deployment opened as http://192.168.x.x isn't one, so build a v4 UUID
+ * from getRandomValues (available everywhere) instead of crashing on load.
+ */
+function uuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6]! & 0x0f) | 0x40;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 function persistentDeviceId(): string {
   const k = "dropbeam.deviceId";
   let v = localStorage.getItem(k);
   if (!v) {
-    v = crypto.randomUUID();
+    v = uuid();
     localStorage.setItem(k, v);
   }
   return v;
@@ -145,6 +203,7 @@ function goto(stage: Stage, push = true): void {
   window.scrollTo({ top: 0, behavior: "smooth" });
 
   if (stage === "idle") {
+    renderHistory();
     setPickedFiles([]);
     if (sendFilesInput) sendFilesInput.value = "";
     if (recvCodeInput) recvCodeInput.value = "";
@@ -156,8 +215,10 @@ function goto(stage: Stage, push = true): void {
 function back(): void {
   cancelActive();
   history.pop();
-  const prev = history.pop() ?? "idle";
-  goto(prev);
+  // Never "go back" into a live-session screen — its session is gone now.
+  let prev: Stage | undefined;
+  do { prev = history.pop(); } while (prev === "send-share" || prev === "active" || prev === "done");
+  goto(prev ?? "idle");
 }
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-back]")) {
@@ -170,12 +231,22 @@ const sigUrlEl = $<HTMLElement>("#sig-url");
 const connPill = $<HTMLElement>("#conn-pill");
 const connPillLabel = $<HTMLElement>("#conn-pill-label");
 
+const configBanner = $<HTMLElement>("#config-banner");
+
 function refreshConnPill(): void {
-  sigUrlEl.textContent = env.signalingUrl;
+  sigUrlEl.textContent = env.signalingUrl || "not configured";
+  if (env.configError) {
+    configBanner.textContent = env.configError;
+    configBanner.classList.remove("hidden");
+    connPill.classList.remove("pill-muted", "pill-net", "pill-lan");
+    connPill.classList.add("pill-warn");
+    connPillLabel.textContent = "Not configured";
+    return;
+  }
   connPill.classList.remove("pill-muted", "pill-net", "pill-lan");
   if (env.mode === "lan") {
     connPill.classList.add("pill-lan");
-    connPillLabel.textContent = env.sameOrigin ? "LAN · no internet needed" : "LAN mode";
+    connPillLabel.textContent = env.sameOrigin ? "LAN · no internet needed" : "Same Wi-Fi mode";
   } else {
     connPill.classList.add("pill-net");
     connPillLabel.textContent = "Internet mode";
@@ -189,16 +260,9 @@ const modeLan = $<HTMLButtonElement>("#mode-lan");
 const modeNet = $<HTMLButtonElement>("#mode-net");
 
 function setMode(m: ConnectionMode, persist = true): void {
-  env = { ...env, mode: m };
-  if (m === "net") {
-    // Switching to internet mode: ensure we have STUN; if the page is on a LAN
-    // host, this still works — we'll just discover external reflexive candidates.
-    if (env.iceServers.length === 0) {
-      env.iceServers = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
-    }
-  } else {
-    env.iceServers = [];
-  }
+  // LAN mode: no STUN/TURN, so only host candidates are gathered and the
+  // connection never leaves the local network. Anywhere mode: STUN + TURN.
+  env = { ...env, mode: m, iceServers: m === "net" ? env.netIceServers : [] };
   modeLan.setAttribute("aria-selected", String(m === "lan"));
   modeNet.setAttribute("aria-selected", String(m === "net"));
   if (persist) localStorage.setItem("dropbeam.mode", m);
@@ -216,7 +280,10 @@ modeNet.addEventListener("click", () => setMode("net"));
 /* ─────────────── role cards ─────────────── */
 
 $<HTMLButtonElement>("#go-send").addEventListener("click", () => goto("send-pick"));
-$<HTMLButtonElement>("#go-recv").addEventListener("click", () => goto("recv-pick"));
+$<HTMLButtonElement>("#go-recv").addEventListener("click", () => {
+  goto("recv-pick");
+  void refreshRecvStorageInfo();
+});
 
 /* ─────────────── send: pick files ─────────────── */
 
@@ -256,6 +323,23 @@ function setPickedFiles(files: File[]): void {
     sendTotals.classList.add("hidden");
   }
   sendCreate.disabled = files.length === 0;
+  renderSendWarning(total);
+}
+
+const GB = 1024 ** 3;
+function renderSendWarning(total: number): void {
+  const warn = document.querySelector<HTMLElement>("#send-warn");
+  if (!warn) return;
+  if (total < 2 * GB) {
+    warn.classList.add("hidden");
+    return;
+  }
+  let text = `Big transfer (${humanBytes(total)}). Both devices need to keep this page open and stay awake until it finishes. If it gets interrupted, send again \u2014 it continues where it stopped.`;
+  if (total >= 10 * GB) {
+    text += " Best results: the receiver uses Chrome or Edge on a computer and chooses a folder. Phones, Safari and Firefox hold files inside the browser first, which needs about twice the free space.";
+  }
+  warn.textContent = text;
+  warn.classList.remove("hidden");
 }
 
 ["dragenter", "dragover"].forEach((ev) =>
@@ -305,6 +389,10 @@ let currentShareCode: string | null = null;
 let currentShareUrl: string | null = null;
 
 function setShareCode(code: string): void {
+  if (code === "\u2026" || code === "…") {
+    document.querySelector("#share-expiry")!.textContent = "";
+    document.querySelector("#share-renew")?.classList.add("hidden");
+  }
   currentShareCode = code;
   shareCodeEl.textContent = code;
 
@@ -358,13 +446,30 @@ const scannerVideo = $<HTMLVideoElement>("#scanner-video");
 
 let saveDir: FileSystemDirectoryHandle | null = null;
 
-const showDirectoryPicker = (window as unknown as {
-  showDirectoryPicker?: (opts?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
-}).showDirectoryPicker;
+type DirectoryPicker = (opts?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
 
-if (!showDirectoryPicker) {
-  recvPickDirBtn.disabled = true;
-  recvPickDirBtn.title = "Folder picker not supported in this browser; downloads will go to the default downloads folder.";
+const showDirectoryPicker: DirectoryPicker | undefined =
+  (window as unknown as { showDirectoryPicker?: DirectoryPicker }).showDirectoryPicker?.bind(window);
+
+/** Browser's private file storage (OPFS): phones, Safari, Firefox, and Chrome without a chosen folder. */
+const hasBrowserStorage = typeof navigator.storage?.getDirectory === "function";
+
+const recvStorageEl = $<HTMLElement>("#recv-storage");
+const recvLeftovers = $<HTMLElement>("#recv-leftovers");
+const recvLeftoversText = $<HTMLElement>("#recv-leftovers-text");
+
+/** Plain http:// on a LAN IP: browsers disable file saving and Web Crypto. */
+const INSECURE_CONTEXT_MSG =
+  "This page is open over plain http://, so the browser won't let it save files. Open DropBeam over https:// (or on localhost) to receive here. Sending still works.";
+
+if (!window.isSecureContext) {
+  recvPickDirBtn.classList.add("hidden");
+  recvDirName.textContent = INSECURE_CONTEXT_MSG;
+} else if (!showDirectoryPicker) {
+  recvPickDirBtn.classList.add("hidden");
+  recvDirName.textContent = hasBrowserStorage
+    ? "Files are held in this browser while they arrive. When it's done you tap Save (on iPhone: Share \u2192 Save to Files)."
+    : "This browser can't save received files. Please use a current version of Chrome, Edge, Safari or Firefox.";
 }
 
 recvPickDirBtn.addEventListener("click", async () => {
@@ -459,83 +564,346 @@ function extractCodeFromUrl(text: string): string | null {
 
 /* ─────────────── transfer orchestration ─────────────── */
 
-type ActiveSession = {
+/** Rejection reason used when the user backs out — never shown as an error. */
+class Cancelled extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "Cancelled";
+  }
+}
+
+/** How long ICE gets to reach "connected" after the offer/answer exchange. */
+const CONNECT_TIMEOUT_MS = 30_000;
+/** How long the worker gets to open its first DataChannel before we give up. */
+const WORKER_START_TIMEOUT_MS = 15_000;
+
+interface Session {
+  role: "send" | "receive";
   signaling: SignalingClient;
-  host: WorkerTransferHost;
-  pc: RTCPeerConnection;
-  transportPoll: number;
-};
+  pc: RTCPeerConnection | null;
+  host: WorkerTransferHost | null;
+  transportPoll: number | null;
+  /** "setup" until the peer connection is up; "transfer" afterwards. */
+  phase: "setup" | "transfer";
+  /** Rejects as soon as anything fatal happens (cancel, peer left, ICE failed…). */
+  failed: Promise<never>;
+  fail(err: Error): void;
+  cancelled: boolean;
+  /** Set once the transfer finished successfully. */
+  completed: boolean;
+  /** The other device's friendly name, once known. */
+  peerName: string;
+  startedAt: number;
+  tornDown: boolean;
+}
 
-let active: ActiveSession | null = null;
+let session: Session | null = null;
 
-function cancelActive(): void {
-  if (!active) return;
-  try { active.host.abort("user-cancel"); } catch { /* ignore */ }
-  try { active.host.dispose(); } catch { /* ignore */ }
-  try { active.signaling.close(); } catch { /* ignore */ }
-  try { active.pc.close(); } catch { /* ignore */ }
-  clearInterval(active.transportPoll);
-  active = null;
+// Dev-only debugging handle (stripped from production builds).
+if (import.meta.env.DEV) {
+  (window as unknown as { __dropbeam: unknown }).__dropbeam = { get session() { return session; } };
+}
+
+function newSession(role: Session["role"]): Session {
+  if (env.configError) throw new Error(env.configError);
+  const signaling = new SignalingClient({ url: env.signalingUrl, device: DEVICE });
+  let reject!: (e: Error) => void;
+  const failed = new Promise<never>((_, rej) => { reject = rej; });
+  failed.catch(() => { /* observed via race() */ });
+  const s: Session = {
+    role,
+    signaling,
+    pc: null,
+    host: null,
+    transportPoll: null,
+    phase: "setup",
+    failed,
+    fail: (err) => reject(err),
+    cancelled: false,
+    completed: false,
+    peerName: "",
+    startedAt: Date.now(),
+    tornDown: false,
+  };
+  // Losing signaling only matters while we still need it for the handshake;
+  // once the DataChannels are up, bytes flow peer-to-peer without it.
+  signaling.onClose((err) => {
+    if (s.phase === "setup") s.fail(err);
+  });
+  return s;
+}
+
+/** Await `p`, but bail out the moment the session fails or is cancelled. */
+function race<T>(s: Session, p: Promise<T>): Promise<T> {
+  return Promise.race([p, s.failed]);
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let t: number | undefined;
+  const timer = new Promise<never>((_, rej) => { t = window.setTimeout(() => rej(new Error(message)), ms); });
+  return Promise.race([p, timer]).finally(() => clearTimeout(t));
+}
+
+function teardown(s: Session, abortTransfer: boolean): void {
+  if (s.tornDown) return;
+  s.tornDown = true;
+  if (abortTransfer) { try { s.host?.abort("user-cancel"); } catch { /* ignore */ } }
+  const host = s.host;
+  if (host) {
+    // After a cancel/failure the worker still needs a moment to close (and
+    // trim) partially-written files so they can be resumed; don't kill it mid-write.
+    const dispose = (): void => { try { host.dispose(); } catch { /* ignore */ } };
+    if (s.completed) dispose();
+    else window.setTimeout(dispose, 2000);
+  }
+  try { s.signaling.close(); } catch { /* ignore */ }
+  try { s.pc?.close(); } catch { /* ignore */ }
+  if (s.transportPoll !== null) clearInterval(s.transportPoll);
+  if (session === s) session = null;
   releaseWakeLock();
+}
+
+/** User backed out: stop everything and swallow the resulting errors. */
+function cancelActive(): void {
+  const s = session;
+  if (!s) return;
+  s.cancelled = true;
+  s.fail(new Cancelled());
+  teardown(s, true);
+}
+
+/**
+ * Create the RTCPeerConnection for a session and wire trickle ICE.
+ *
+ * Remote ICE candidates that arrive before the remote description is set are
+ * queued and flushed afterwards (adding them early throws InvalidStateError,
+ * which used to silently drop them). All remote signals are processed one at a
+ * time so an answer and its candidates can't race each other.
+ *
+ * Call `start()` only after the WorkerTransferHost exists, so the host is
+ * already listening for DataChannels when the remote description lands.
+ */
+function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; start(): Promise<void> } {
+  const pc = new RTCPeerConnection({ iceServers: env.iceServers });
+  s.pc = pc;
+  const pendingIce: RTCIceCandidateInit[] = [];
+  let chain: Promise<void> = Promise.resolve();
+  let connectTimer: number | undefined;
+
+  // The worker creates the DataChannels asynchronously; the first one fires
+  // `negotiationneeded`, which is the earliest moment an offer will actually
+  // contain the data section. (A fixed delay here was racy on slow devices.)
+  const negotiationNeeded = new Promise<void>((resolve) => {
+    pc.addEventListener("negotiationneeded", () => resolve(), { once: true });
+  });
+
+  pc.addEventListener("icecandidate", (ev) => {
+    if (!ev.candidate || s.signaling.closed) return;
+    try {
+      s.signaling.signal(remotePeerId, { kind: "ice", candidate: ev.candidate.toJSON() });
+    } catch { /* signaling gone; onClose handles it */ }
+  });
+
+  pc.addEventListener("connectionstatechange", () => {
+    const st = pc.connectionState;
+    if (st === "connected") {
+      s.phase = "transfer";
+      clearTimeout(connectTimer);
+      setActiveTitle(s.role === "send" ? "Sending…" : "Receiving…");
+      setStep("link");
+    } else if (st === "failed") {
+      clearTimeout(connectTimer);
+      s.fail(new Error(connectFailureMessage(s.phase)));
+    }
+  });
+
+  s.signaling.on((m) => {
+    if (m.type === "peer-left" && m.peerId === remotePeerId && s.phase === "setup") {
+      s.fail(new Error("The other device left before the transfer started."));
+    }
+  });
+
+  const flushIce = async (): Promise<void> => {
+    while (pendingIce.length) {
+      const c = pendingIce.shift()!;
+      await pc.addIceCandidate(c).catch((err) => console.warn("addIceCandidate failed", err));
+    }
+  };
+
+  const armConnectTimeout = (): void => {
+    connectTimer = window.setTimeout(() => {
+      if (pc.connectionState !== "connected") s.fail(new Error(connectFailureMessage("setup")));
+    }, CONNECT_TIMEOUT_MS);
+  };
+
+  const handleSignal = async (data: unknown): Promise<void> => {
+    const msg = data as
+      | { kind: "sdp"; sdp: RTCSessionDescriptionInit }
+      | { kind: "ice"; candidate: RTCIceCandidateInit };
+    if (msg.kind === "ice") {
+      if (pc.remoteDescription) {
+        await pc.addIceCandidate(msg.candidate).catch((err) => console.warn("addIceCandidate failed", err));
+      } else {
+        pendingIce.push(msg.candidate);
+      }
+      return;
+    }
+    if (msg.kind !== "sdp") return;
+    if (msg.sdp.type === "offer" && s.role === "receive" && !pc.remoteDescription) {
+      await pc.setRemoteDescription(msg.sdp);
+      await flushIce();
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      s.signaling.signal(remotePeerId, { kind: "sdp", sdp: pc.localDescription });
+      armConnectTimeout();
+    } else if (msg.sdp.type === "answer" && s.role === "send" && pc.signalingState === "have-local-offer") {
+      await pc.setRemoteDescription(msg.sdp);
+      await flushIce();
+    }
+  };
+
+  return {
+    pc,
+    async start() {
+      // Subscribing replays anything that arrived early (e.g. the offer).
+      s.signaling.onSignalFrom(remotePeerId, (data) => {
+        chain = chain.then(() => handleSignal(data)).catch((err) => {
+          console.warn("signal handling failed", err);
+          s.fail(new Error("Couldn't complete the connection handshake."));
+        });
+      });
+      if (s.role === "send") {
+        await race(s, withTimeout(negotiationNeeded, WORKER_START_TIMEOUT_MS, "The transfer engine didn't start. Reload the page and try again."));
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        s.signaling.signal(remotePeerId, { kind: "sdp", sdp: pc.localDescription });
+        armConnectTimeout();
+      }
+    },
+  };
+}
+
+function connectFailureMessage(phase: Session["phase"]): string {
+  if (phase === "transfer") return "The connection to the other device dropped.";
+  if (env.mode === "lan") {
+    return "Couldn't connect over the local network. Make sure both devices are on the same Wi-Fi, or switch to “Anywhere” mode.";
+  }
+  return env.hasTurn
+    ? "Couldn't open a connection between the two devices, even through the relay. Check that neither network blocks WebRTC."
+    : "Couldn't open a direct connection — one of the networks blocks peer-to-peer traffic, and this deployment has no TURN relay configured.";
+}
+
+/** Map engine / server error strings to something a person can act on. */
+function friendlyError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/room-not-found/.test(raw)) return "No active transfer uses that code. Check it, or ask the sender for a new one.";
+  if (/room-full/.test(raw)) return "Someone else already joined that transfer.";
+  {
+    const m = /insufficient-storage: needs ([^,]+), this browser can store about (.+)$/.exec(raw);
+    if (m) {
+      return /receiver rejected/.test(raw)
+        ? `The receiving device doesn't have enough free space (needs ${m[1]}, has about ${m[2]}). Ask them to free up space or use Chrome or Edge on a computer and choose a folder.`
+        : `Not enough space in this browser: needs ${m[1]}, can store about ${m[2]}. Free up space on this device, or use Chrome or Edge on a computer and choose a folder.`;
+    }
+  }
+  if (/passphrase-unavailable/.test(raw)) return "Passphrase encryption needs DropBeam to be opened over https://. Remove the passphrase or open the https:// address.";
+  if (/rate-limited/.test(raw)) return "Too many attempts. Wait a few seconds and try again.";
+  if (/passphrase-required/.test(raw)) return "The sender protected this transfer with a passphrase. Enter it and try again.";
+  if (/receiver aborted: wrong-passphrase/.test(raw)) return "The receiver entered a different passphrase, so nothing was saved.";
+  if (/wrong-passphrase|OperationError|operation-specific|decrypt/i.test(raw)) return "Wrong passphrase — the files couldn't be decrypted, so nothing was saved.";
+  if (/sender aborted|user-cancel/.test(raw)) return "The sender cancelled the transfer.";
+  if (/control channel closed|channel (closed|closing)|during drain/.test(raw)) {
+    return "The other device cancelled or lost its connection. Send again \u2014 the transfer will pick up where it stopped.";
+  }
+  if (/integrity-check-failed/.test(raw)) {
+    return /receiver aborted/.test(raw)
+      ? "A file arrived corrupted on the other device and was deleted. Try sending again."
+      : raw.replace(/^.*integrity-check-failed: /, "Integrity check failed: ") + ". Try again.";
+  }
+  if (/receiver aborted|receiver-cancel/.test(raw)) return "The receiver cancelled the transfer.";
+  return raw || "Something went wrong. Please try again.";
+}
+
+function resetActiveUI(peerLabel: string): void {
+  manifestFiles = [];
+  receivedFiles = [];
+  longTransferHintShown = false;
+  fileBarEls.clear();
+  currentStep = "connect";
+  setStep("connect", true); // force-reset
+  setStep("connect");
+  fileStatusEls.clear();
+  activeFilelist.innerHTML = "";
+  progressFill.style.width = "0%";
+  progressHeadline.textContent = "0 B / 0 B";
+  progressRate.textContent = "—";
+  progressEta.textContent = "—";
+  progressFiles.textContent = "—";
+  endPeerName.textContent = peerLabel;
+  endPeerName.classList.add("muted");
+  endPeerGlyph.textContent = "";
+  setTransport("handshaking");
+  setActiveStatus("");
 }
 
 async function startSend(files: File[], passphrase: string | undefined): Promise<void> {
   cancelActive();
+  if (!files.length) return;
+  lastAttempt = { role: "send", files, passphrase };
   sendCreate.disabled = true;
+  let s: Session;
+  try {
+    s = newSession("send");
+  } catch (err) {
+    sendCreate.disabled = false;
+    onTransferFailed(friendlyError(err));
+    return;
+  }
+  session = s;
   goto("send-share");
   setShareCode("…");
-  setActiveTitle("Creating room…");
-
-  const signaling = new SignalingClient({ url: env.signalingUrl, device: DEVICE });
-  let host: WorkerTransferHost | null = null;
-  let pc: RTCPeerConnection | null = null;
+  waitingText.textContent = "Connecting to the signaling server…";
 
   try {
-    await signaling.ready();
-    const room = await signaling.createRoom();
+    await race(s, s.signaling.ready());
+    const room = await race(s, s.signaling.createRoom());
     setShareCode(room.code);
     waitingText.textContent = "Waiting for the receiver to join…";
+    startExpiryCountdown(s, room.expiresAt);
 
-    const remotePeerId = await waitForPeerJoined(signaling);
+    const peer = await race(s, waitForPeerJoined(s.signaling));
+    stopExpiryCountdown();
+    s.peerName = peer.name;
+    resetActiveUI("Receiver");
+    setPeerName(peer.name);
     goto("active");
-    setActiveTitle("Negotiating…");
-    setPeerName("Receiver");
+    setActiveTitle("Connecting…");
 
-    pc = new RTCPeerConnection({ iceServers: env.iceServers });
-    wireTrickleIce(pc, signaling, remotePeerId);
-
-    host = new WorkerTransferHost({
-      worker: () => new TransferWorker(),
-      peerConnection: pc,
-    });
-
-    const transferPromise = host.send(crypto.randomUUID(), files, {
+    const link = createLink(s, peer.peerId);
+    s.transportPoll = startTransportPoll(link.pc);
+    s.host = new WorkerTransferHost({ worker: () => new TransferWorker(), peerConnection: link.pc });
+    const transfer = s.host.send(uuid(), files, {
       ...(passphrase ? { encryptionPassphrase: passphrase } : {}),
       onEvent: (e) => onTransferEvent(e, files),
     });
-
-    await nextAnimationFrame();
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    signaling.signal(remotePeerId, { kind: "sdp", sdp: pc.localDescription });
-
-    active = { signaling, host, pc, transportPoll: startTransportPoll(pc) };
+    transfer.catch(() => { /* observed via race() */ });
     void acquireWakeLock();
 
-    listenForPeerInfo(signaling);
-
-    await transferPromise;
+    await race(s, link.start());
+    await race(s, transfer);
+    s.completed = true;
+    recordHistory(s, true);
     onTransferDone("Files delivered.");
   } catch (err) {
-    onTransferFailed((err as Error).message);
+    if (!s.cancelled) {
+      const msg = friendlyError(err);
+      recordHistory(s, false, msg);
+      onTransferFailed(msg);
+    }
   } finally {
-    if (host) host.dispose();
-    if (pc) pc.close();
-    signaling.close();
-    if (active) clearInterval(active.transportPoll);
-    active = null;
-    releaseWakeLock();
-    sendCreate.disabled = false;
+    stopExpiryCountdown();
+    teardown(s, false);
+    sendCreate.disabled = pickedFiles.length === 0;
   }
 }
 
@@ -546,76 +914,159 @@ async function startReceive(
 ): Promise<void> {
   cancelActive();
   recvGoBtn.disabled = true;
+  lastAttempt = { role: "receive" };
+
+  // Destination: the folder the user chose, otherwise the browser's private
+  // storage (files are saved out with a tap once the transfer finishes).
+  const browserMode = !dir;
+  try {
+    if (!dir) dir = await inboxDir();
+  } catch (err) {
+    recvGoBtn.disabled = false;
+    onTransferFailed(friendlyError(err));
+    return;
+  }
+
+  let s: Session;
+  try {
+    s = newSession("receive");
+  } catch (err) {
+    recvGoBtn.disabled = false;
+    onTransferFailed(friendlyError(err));
+    return;
+  }
+  session = s;
+  resetActiveUI("Sender");
   goto("active");
   setActiveTitle("Connecting…");
-  setPeerName("Sender");
-  setActiveStatus("");
 
-  const code = rawCode.toUpperCase();
-  const signaling = new SignalingClient({ url: env.signalingUrl, device: DEVICE });
-  let host: WorkerTransferHost | null = null;
-  let pc: RTCPeerConnection | null = null;
+  const code = rawCode.trim(); // the server normalizes case / dashes / spaces
 
   try {
-    await signaling.ready();
-    const joined = await signaling.joinRoom(code);
+    await race(s, s.signaling.ready());
+    const joined = await race(s, s.signaling.joinRoom(code));
     const remote = joined.peers[0];
-    if (!remote) throw new Error("Sender hasn't created a room yet.");
+    if (!remote) throw new Error("The sender isn't connected any more. Ask them for a new code.");
     setPeerName(remote.device.name);
+    s.peerName = remote.device.name;
 
-    pc = new RTCPeerConnection({ iceServers: env.iceServers });
-    wireTrickleIce(pc, signaling, remote.peerId);
-
-    host = new WorkerTransferHost({
-      worker: () => new TransferWorker(),
-      peerConnection: pc,
-    });
-
-    const sink: Parameters<WorkerTransferHost["receive"]>[0] extends infer T ? T : never =
-      dir
-        ? { sink: { kind: "fsaccess" as const, directory: dir }, ...(passphrase ? { encryptionPassphrase: passphrase } : {}) }
-        : { sink: { kind: "fsaccess" as const, directory: await ensureFallbackDir() }, ...(passphrase ? { encryptionPassphrase: passphrase } : {}) };
-
-    const transferPromise = host.receive({
-      ...sink,
+    const link = createLink(s, remote.peerId);
+    s.transportPoll = startTransportPoll(link.pc);
+    s.host = new WorkerTransferHost({ worker: () => new TransferWorker(), peerConnection: link.pc });
+    const transfer = s.host.receive({
+      sink: { kind: "fsaccess", directory: dir, ...(browserMode ? { browserStorage: true } : {}) },
+      ...(passphrase ? { encryptionPassphrase: passphrase } : {}),
       onEvent: (e) => onTransferEvent(e, []),
     });
-
-    const offer = await waitForSdp(signaling, remote.peerId, "offer");
-    await pc.setRemoteDescription(offer);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    signaling.signal(remote.peerId, { kind: "sdp", sdp: pc.localDescription });
-
-    active = { signaling, host, pc, transportPoll: startTransportPoll(pc) };
+    transfer.catch(() => { /* observed via race() */ });
     void acquireWakeLock();
 
-    await transferPromise;
-    onTransferDone(dir ? `Saved to ${dir.name}` : "Files saved.");
+    await race(s, link.start());
+    await race(s, transfer);
+    s.completed = true;
+    recordHistory(s, true, browserMode ? undefined : `saved to ${dir.name}`);
+    if (browserMode) {
+      onTransferDone("Now save them to this device.");
+      await renderSaves(receivedFiles.map((f) => ({ name: f.savedAs, size: f.size })), "fresh");
+    } else {
+      onTransferDone(`Saved to \u201c${dir.name}\u201d.`);
+    }
   } catch (err) {
-    onTransferFailed((err as Error).message);
+    if (!s.cancelled) {
+      const msg = friendlyError(err);
+      recordHistory(s, false, msg);
+      onTransferFailed(msg);
+    }
   } finally {
-    if (host) host.dispose();
-    if (pc) pc.close();
-    signaling.close();
-    if (active) clearInterval(active.transportPoll);
-    active = null;
-    releaseWakeLock();
-    recvGoBtn.disabled = false;
+    teardown(s, false);
+    updateRecvButton();
   }
 }
 
-async function ensureFallbackDir(): Promise<FileSystemDirectoryHandle> {
-  if (!showDirectoryPicker) {
-    throw new Error("This browser can't write to disk. Use Chrome, Edge, or pick a folder.");
+/* ─────────────── browser-storage inbox (OPFS) ─────────────── */
+
+const INBOX = "dropbeam-inbox";
+/** Received files left in browser storage are removed after this long. */
+const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+async function inboxDir(): Promise<FileSystemDirectoryHandle> {
+  if (!window.isSecureContext) throw new Error(INSECURE_CONTEXT_MSG);
+  if (!hasBrowserStorage) {
+    throw new Error("This browser can't save received files. Please use a current version of Chrome, Edge, Safari or Firefox.");
   }
-  setActiveStatus("Pick a folder to save downloads to…");
-  saveDir = await showDirectoryPicker({ mode: "readwrite" });
-  recvDirName.textContent = saveDir.name;
-  recvDirName.classList.remove("muted");
-  setActiveStatus("");
-  return saveDir;
+  const root = await navigator.storage.getDirectory();
+  return root.getDirectoryHandle(INBOX, { create: true });
 }
+
+type InboxEntry = { name: string; size: number; lastModified: number; partial: boolean };
+
+async function listInbox(): Promise<InboxEntry[]> {
+  if (!hasBrowserStorage) return [];
+  const out: InboxEntry[] = [];
+  try {
+    const dir = await inboxDir();
+    const it = (dir as unknown as { entries(): AsyncIterable<[string, FileSystemHandle]> }).entries();
+    for await (const [name, h] of it) {
+      if (h.kind !== "file") continue;
+      try {
+        const f = await (h as FileSystemFileHandle).getFile();
+        out.push({ name, size: f.size, lastModified: f.lastModified, partial: name.endsWith(".dbpart") });
+      } catch { /* locked by an in-flight write */ }
+    }
+  } catch { /* storage unavailable (private mode, etc.) */ }
+  return out;
+}
+
+async function removeFromInbox(names: string[]): Promise<void> {
+  try {
+    const dir = await inboxDir();
+    await Promise.all(names.map((n) => dir.removeEntry(n).catch(() => {})));
+  } catch { /* ignore */ }
+}
+
+/** Drop anything older than a day so forgotten transfers don't eat disk space. */
+async function pruneInbox(): Promise<void> {
+  const cutoff = Date.now() - INBOX_MAX_AGE_MS;
+  const old = (await listInbox()).filter((e) => e.lastModified < cutoff).map((e) => e.name);
+  if (old.length) await removeFromInbox(old);
+}
+
+/** Recv screen: how much this browser can hold, and any files left from earlier. */
+async function refreshRecvStorageInfo(): Promise<void> {
+  if (!hasBrowserStorage) return;
+  try {
+    const est = await navigator.storage.estimate();
+    if (est.quota) {
+      const free = Math.max(0, est.quota - (est.usage ?? 0)) * 0.95;
+      recvStorageEl.textContent = showDirectoryPicker
+        ? `Without a folder, this browser can hold about ${humanBytes(free)} of incoming files.`
+        : `This browser can hold about ${humanBytes(free)} of incoming files.`;
+      recvStorageEl.classList.remove("hidden");
+    }
+  } catch { /* estimate unsupported */ }
+  const done = (await listInbox()).filter((e) => !e.partial);
+  if (done.length) {
+    const bytes = done.reduce((n, e) => n + e.size, 0);
+    recvLeftoversText.textContent = `${done.length} received file${done.length === 1 ? " is" : "s are"} still stored in this browser (${humanBytes(bytes)}).`;
+    recvLeftovers.classList.remove("hidden");
+  } else {
+    recvLeftovers.classList.add("hidden");
+  }
+}
+
+$<HTMLButtonElement>("#recv-leftovers-show").addEventListener("click", async () => {
+  const done = (await listInbox()).filter((e) => !e.partial);
+  setDoneState("ok", "Files waiting in this browser", "Save them to this device, then clear them.");
+  goto("done");
+  await renderSaves(done.map((e) => ({ name: e.name, size: e.size })), "leftover");
+});
+$<HTMLButtonElement>("#recv-leftovers-clear").addEventListener("click", async () => {
+  const all = await listInbox();
+  await removeFromInbox(all.map((e) => e.name));
+  await refreshRecvStorageInfo();
+});
+
+void pruneInbox().then(() => refreshRecvStorageInfo());
 
 /* ─────────────── active stage rendering ─────────────── */
 
@@ -639,6 +1090,40 @@ endSelfGlyph.textContent = initials(DEVICE.name);
 endSelfName.textContent = DEVICE.name;
 
 let manifestFiles: { fileId: number; name: string; size: number; mime?: string }[] = [];
+/** Files this receive session finished, with the name they ended up under. */
+let receivedFiles: { name: string; savedAs: string; size: number }[] = [];
+let longTransferHintShown = false;
+const fileBarEls = new Map<number, HTMLElement>();
+
+function setFileBar(fileId: number, fraction: number, state: "" | "verifying" | "ok" = ""): void {
+  const bar = fileBarEls.get(fileId);
+  if (!bar) return;
+  bar.classList.toggle("verifying", state === "verifying");
+  bar.classList.toggle("ok", state === "ok");
+  (bar.firstElementChild as HTMLElement).style.width = `${Math.max(0, Math.min(1, fraction)) * 100}%`;
+}
+
+/* ─── connection stepper ─── */
+const STEPS = ["connect", "link", "transfer", "verify"] as const;
+type Step = (typeof STEPS)[number];
+const stepEls = new Map<Step, HTMLElement>(
+  STEPS.map((k) => [k, document.querySelector<HTMLElement>(`#steps [data-step="${k}"]`)!]),
+);
+let currentStep: Step | "done" = "connect";
+
+function setStep(step: Step | "done", failed = false): void {
+  const idx = step === "done" ? STEPS.length : STEPS.indexOf(step);
+  // Steps only move forward within a transfer (late events can't rewind it).
+  const curIdx = currentStep === "done" ? STEPS.length : STEPS.indexOf(currentStep);
+  if (!failed && idx < curIdx) return;
+  currentStep = step;
+  STEPS.forEach((k, i) => {
+    const el = stepEls.get(k)!;
+    el.classList.toggle("done", i < idx);
+    el.classList.toggle("active", i === idx && !failed);
+    el.classList.toggle("failed", i === idx && failed);
+  });
+}
 const fileStatusEls = new Map<number, HTMLElement>();
 
 function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
@@ -664,7 +1149,8 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       }));
       fileStatusEls.clear();
       renderActiveFilelist(manifestFiles);
-      setActiveTitle(`Receiving ${e.files.length} file${e.files.length === 1 ? "" : "s"}…`);
+      const verb = session?.role === "send" ? "Sending" : "Receiving";
+      setActiveTitle(`${verb} ${e.files.length} file${e.files.length === 1 ? "" : "s"}…`);
       progressFiles.textContent = `0 / ${e.files.length} files`;
       break;
     }
@@ -677,22 +1163,57 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       const filesDone = manifestFiles.filter((f) => fileStatusEls.get(f.fileId)?.classList.contains("ok")).length;
       progressFiles.textContent = `${filesDone} / ${manifestFiles.length || sentFiles.length} files`;
       // Update the currently-transferring file as "sending"/"receiving".
+      setStep("transfer");
       const inFlight = fileStatusEls.get(e.fileId);
       if (inFlight && !inFlight.classList.contains("ok")) {
-        inFlight.textContent = "in flight";
+        inFlight.textContent = `${Math.floor((e.bytesTransferred / Math.max(1, e.fileSize)) * 100)}%`;
+        setFileBar(e.fileId, e.bytesTransferred / Math.max(1, e.fileSize));
+      }
+      // Long transfers die if the device sleeps or the tab closes: say so once.
+      if (!longTransferHintShown && isFinite(e.etaSeconds) && e.etaSeconds > 10 * 60) {
+        longTransferHintShown = true;
+        setActiveStatus(
+          `Long transfer (about ${Math.round(e.etaSeconds / 60)} min). Keep this page open and the device awake \u2014 plugged in if you can. If it gets interrupted, send again and it continues where it stopped.`,
+        );
+      }
+      break;
+    }
+    case "verifying": {
+      setStep("verify");
+      setFileBar(e.fileId, e.fileSize > 0 ? e.bytesDone / e.fileSize : 1, "verifying");
+      const el = fileStatusEls.get(e.fileId);
+      if (el) {
+        el.textContent = e.fileSize > 0 && e.bytesDone > 0
+          ? `verifying ${Math.floor((e.bytesDone / e.fileSize) * 100)}%`
+          : "verifying\u2026";
       }
       break;
     }
     case "file-done": {
+      const entry = manifestFiles.find((f) => f.fileId === e.fileId);
+      if (entry && session?.role === "receive") {
+        receivedFiles.push({ name: entry.name, savedAs: e.savedAs ?? entry.name, size: entry.size });
+      }
+      setFileBar(e.fileId, 1, "ok");
       const el = fileStatusEls.get(e.fileId);
       if (el) {
-        el.textContent = "✓ done";
+        el.textContent = e.verified ? "✓ verified" : "✓ sent";
+        el.title = `SHA-256 ${e.sha256}`;
         el.classList.add("ok");
+      }
+      if (e.savedAs) {
+        const nameEl = el?.parentElement?.querySelector(".file-name");
+        if (nameEl) nameEl.textContent = `${nameEl.textContent} → ${e.savedAs}`;
       }
       break;
     }
+    case "started":
+      setStep("transfer");
+      break;
     case "complete":
+      setStep("done");
       progressFill.style.width = "100%";
+      progressHeadline.textContent = `${humanBytes(manifestFiles.reduce((n, f) => n + f.size, 0))} done`;
       break;
     case "error":
       setActiveStatus(e.error.message, "err");
@@ -716,9 +1237,16 @@ function renderActiveFilelist(files: { fileId: number; name: string; size: numbe
     const status = document.createElement("span");
     status.className = "file-status";
     status.textContent = "queued";
-    li.append(icon, name, size, status);
+    const bar = document.createElement("span");
+    bar.className = "file-bar";
+    bar.setAttribute("aria-hidden", "true");
+    const fill = document.createElement("span");
+    fill.className = "file-bar-fill";
+    bar.append(fill);
+    li.append(icon, name, size, status, bar);
     activeFilelist.appendChild(li);
     fileStatusEls.set(f.fileId, status);
+    fileBarEls.set(f.fileId, bar);
   }
 }
 
@@ -825,7 +1353,7 @@ function setTransport(kind: "handshaking" | "lan" | "p2p" | "relayed"): void {
       break;
     case "lan":
       transportPill.classList.add("pill-lan");
-      transportLabel.textContent = "LAN-direct · no internet";
+      transportLabel.textContent = "LAN-direct · stays on your Wi-Fi";
       break;
     case "p2p":
       transportPill.classList.add("pill-ok");
@@ -843,90 +1371,316 @@ function setTransport(kind: "handshaking" | "lan" | "p2p" | "relayed"): void {
 const doneTitle = $<HTMLElement>("#done-title");
 const doneSub = $<HTMLElement>("#done-sub");
 const doneAgain = $<HTMLButtonElement>("#done-again");
-const sendBackBtn = $<HTMLButtonElement>("#send-back");
-
-sendBackBtn.addEventListener("click", () => {
-  goto("idle", false);
-});
-
 doneAgain.addEventListener("click", () => {
   goto("idle");
 });
 
-function onTransferDone(subtitle: string): void {
-  doneTitle.textContent = "Transfer complete";
+const doneCard = $<HTMLElement>(".done-card");
+const doneIconPath = $<SVGPathElement>("#done-icon-path");
+const doneSaves = $<HTMLElement>("#done-saves");
+const doneSavesNote = $<HTMLElement>("#done-saves-note");
+const doneFiles = $<HTMLUListElement>("#done-files");
+const doneShareAll = $<HTMLButtonElement>("#done-share-all");
+const doneClear = $<HTMLButtonElement>("#done-clear");
+
+function setDoneState(kind: "ok" | "failed", title: string, subtitle: string): void {
+  doneCard.classList.toggle("failed", kind === "failed");
+  doneIconPath.setAttribute("d", kind === "ok" ? "m8 12 3 3 5-6" : "m9 9 6 6m0-6-6 6");
+  doneTitle.textContent = title;
   doneSub.textContent = subtitle;
+  doneSaves.classList.add("hidden");
+  doneFiles.innerHTML = "";
+  doneRetry.classList.add("hidden");
+}
+
+function onTransferDone(subtitle: string): void {
+  setDoneState("ok", "Transfer complete", subtitle);
   goto("done");
   burstConfetti();
   if ("vibrate" in navigator) navigator.vibrate?.([30, 80, 30]);
 }
 
 function onTransferFailed(message: string): void {
-  doneTitle.textContent = "Transfer didn't finish";
-  doneSub.textContent = message;
+  setDoneState("failed", "Transfer didn't finish", message);
+  doneRetry.textContent = lastAttempt?.role === "send" ? "Try again with a new code" : "Enter a new code";
+  doneRetry.classList.toggle("hidden", !lastAttempt);
   goto("done");
 }
 
+/* ─── recent transfers (localStorage, this device only) ─── */
+
+interface HistoryEntry {
+  at: number;
+  dir: "sent" | "received";
+  ok: boolean;
+  files: { name: string; size: number }[];
+  totalBytes: number;
+  peer: string;
+  seconds: number;
+  note?: string;
+}
+
+const HISTORY_KEY = "dropbeam.history";
+const HISTORY_MAX = 20;
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? (parsed as HistoryEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(list: HistoryEntry[]): void {
+  try {
+    if (list.length) localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX)));
+    else localStorage.removeItem(HISTORY_KEY);
+  } catch { /* storage full / blocked: history is best-effort */ }
+}
+
+/** Only transfers that got as far as a file list are worth remembering. */
+function recordHistory(s: Session, ok: boolean, note?: string): void {
+  if (!manifestFiles.length) return;
+  const files = manifestFiles.map((f) => ({ name: f.name, size: f.size }));
+  const entry: HistoryEntry = {
+    at: Date.now(),
+    dir: s.role === "send" ? "sent" : "received",
+    ok,
+    files,
+    totalBytes: files.reduce((n, f) => n + f.size, 0),
+    peer: s.peerName,
+    seconds: Math.round((Date.now() - s.startedAt) / 1000),
+    ...(note ? { note } : {}),
+  };
+  saveHistory([entry, ...loadHistory()]);
+  renderHistory();
+}
+
+function timeAgo(at: number): string {
+  const sec = Math.round((Date.now() - at) / 1000);
+  if (sec < 60) return "just now";
+  if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)} h ago`;
+  return new Date(at).toLocaleDateString();
+}
+
+const historySection = $<HTMLElement>("#history");
+const historyList = $<HTMLUListElement>("#history-list");
+
+function renderHistory(): void {
+  const list = loadHistory();
+  historySection.classList.toggle("hidden", list.length === 0);
+  historyList.innerHTML = "";
+  for (const h of list.slice(0, 8)) {
+    const li = document.createElement("li");
+    const dir = document.createElement("span");
+    dir.className = `history-dir ${h.dir}`;
+    dir.textContent = h.dir === "sent" ? "\u2191" : "\u2193";
+    dir.title = h.dir === "sent" ? "Sent" : "Received";
+    const main = document.createElement("span");
+    main.className = "history-main";
+    const names = document.createElement("div");
+    names.className = "history-files";
+    const first = h.files[0]?.name ?? "files";
+    names.textContent = h.files.length > 1 ? `${first} + ${h.files.length - 1} more` : first;
+    names.title = h.files.map((f) => f.name).join("\n");
+    const meta = document.createElement("div");
+    meta.className = "history-meta";
+    const who = h.peer ? `${h.dir === "sent" ? "to" : "from"} ${h.peer} \u00b7 ` : "";
+    meta.textContent = `${humanBytes(h.totalBytes)} \u00b7 ${who}${timeAgo(h.at)}`;
+    if (h.note) meta.title = h.note;
+    main.append(names, meta);
+    const res = document.createElement("span");
+    res.className = `history-result ${h.ok ? "ok" : "fail"}`;
+    res.textContent = h.ok ? "\u2713 done" : "\u2715 failed";
+    if (h.note) res.title = h.note;
+    li.append(dir, main, res);
+    historyList.appendChild(li);
+  }
+}
+
+$<HTMLButtonElement>("#history-clear").addEventListener("click", () => {
+  saveHistory([]);
+  renderHistory();
+});
+renderHistory();
+
+/** What the user last tried, so "Try again" can repeat it. */
+let lastAttempt: { role: "send"; files: File[]; passphrase: string | undefined } | { role: "receive" } | null = null;
+
+const doneRetry = $<HTMLButtonElement>("#done-retry");
+doneRetry.addEventListener("click", () => {
+  const a = lastAttempt;
+  if (!a) return;
+  if (a.role === "send") {
+    void startSend(a.files, a.passphrase);
+  } else {
+    // The sender's room closes when a transfer fails, so a fresh code is needed.
+    // Keep the passphrase and chosen folder; clear only the code.
+    goto("recv-pick");
+    recvCodeInput.value = "";
+    updateRecvButton();
+    recvCodeInput.focus();
+  }
+});
+
+/* ─── share code expiry ─── */
+const shareExpiry = $<HTMLElement>("#share-expiry");
+const shareRenew = $<HTMLButtonElement>("#share-renew");
+let expiryTimer: number | null = null;
+
+function startExpiryCountdown(s: Session, expiresAt: number): void {
+  stopExpiryCountdown();
+  shareExpiry.classList.remove("expired");
+  shareRenew.classList.add("hidden");
+  const tick = (): void => {
+    const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+    if (left > 0) {
+      const m = Math.floor(left / 60);
+      shareExpiry.textContent = `Code expires in ${m}:${String(left % 60).padStart(2, "0")}`;
+      return;
+    }
+    stopExpiryCountdown();
+    shareExpiry.textContent = "This code has expired.";
+    shareExpiry.classList.add("expired");
+    shareRenew.classList.remove("hidden");
+    waitingText.textContent = "Nobody joined in time.";
+    if (session === s) cancelActive();
+  };
+  tick();
+  expiryTimer = window.setInterval(tick, 1000);
+}
+
+function stopExpiryCountdown(): void {
+  if (expiryTimer !== null) clearInterval(expiryTimer);
+  expiryTimer = null;
+}
+
+shareRenew.addEventListener("click", () => {
+  if (lastAttempt?.role === "send") void startSend(lastAttempt.files, lastAttempt.passphrase);
+});
+
+/** Names currently listed in the done screen's save list (for Clear / Share all). */
+let savesShown: string[] = [];
+
+async function getInboxFile(name: string): Promise<File> {
+  const dir = await inboxDir();
+  return (await dir.getFileHandle(name)).getFile();
+}
+
+function canShareFiles(files: File[]): boolean {
+  const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+  try {
+    return !!nav.canShare && nav.canShare({ files });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Received files held in browser storage: one Save (download) button each,
+ * plus Share on devices that support sharing files (iPhone → Save to Files).
+ * The File objects are disk-backed, so even huge files aren't loaded into RAM.
+ */
+async function renderSaves(files: { name: string; size: number }[], kind: "fresh" | "leftover"): Promise<void> {
+  savesShown = files.map((f) => f.name);
+  doneFiles.innerHTML = "";
+  if (!files.length) return;
+  doneSavesNote.textContent =
+    (kind === "fresh"
+      ? "Your files are in this browser's temporary storage. "
+      : "")
+    + "Tap Save to put each one in your Downloads (on iPhone: Share \u2192 Save to Files). They're deleted automatically after 24 hours, or tap Clear when you're done.";
+
+  let anyShare = false;
+  for (const f of files) {
+    const li = document.createElement("li");
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.textContent = fileIconFor(f.name);
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.textContent = f.name;
+    const size = document.createElement("span");
+    size.className = "file-size";
+    size.textContent = humanBytes(f.size);
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "save-btn";
+    save.textContent = "Save";
+    save.addEventListener("click", async () => {
+      try {
+        const file = await getInboxFile(f.name);
+        const url = URL.createObjectURL(file);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = f.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        save.textContent = "Saved \u2713";
+        save.classList.add("saved");
+      } catch {
+        save.textContent = "Missing";
+        save.disabled = true;
+      }
+    });
+    li.append(icon, name, size, save);
+
+    try {
+      const file = await getInboxFile(f.name);
+      if (canShareFiles([file])) {
+        anyShare = true;
+        const share = document.createElement("button");
+        share.type = "button";
+        share.className = "save-btn";
+        share.textContent = "Share\u2026";
+        share.addEventListener("click", async () => {
+          try {
+            await navigator.share({ files: [await getInboxFile(f.name)] });
+          } catch { /* cancelled */ }
+        });
+        li.append(share);
+      }
+    } catch { /* file vanished */ }
+    doneFiles.appendChild(li);
+  }
+  doneShareAll.classList.toggle("hidden", !(anyShare && files.length > 1));
+  doneClear.classList.remove("hidden");
+  doneSaves.classList.remove("hidden");
+}
+
+doneShareAll.addEventListener("click", async () => {
+  try {
+    const files = await Promise.all(savesShown.map((n) => getInboxFile(n)));
+    await navigator.share({ files });
+  } catch { /* cancelled or too many files for the share sheet */ }
+});
+
+doneClear.addEventListener("click", async () => {
+  await removeFromInbox(savesShown);
+  savesShown = [];
+  doneFiles.innerHTML = "";
+  doneShareAll.classList.add("hidden");
+  doneClear.classList.add("hidden");
+  doneSavesNote.textContent = "Cleared from this browser.";
+});
+
 /* ─────────────── signaling glue ─────────────── */
 
-function wireTrickleIce(
-  pc: RTCPeerConnection,
-  signaling: SignalingClient,
-  remotePeerId: string,
-): void {
-  pc.addEventListener("icecandidate", (ev) => {
-    if (ev.candidate) {
-      signaling.signal(remotePeerId, { kind: "ice", candidate: ev.candidate.toJSON() });
-    }
-  });
-  signaling.onSignalFrom(remotePeerId, async (data) => {
-    const msg = data as
-      | { kind: "sdp"; sdp: RTCSessionDescriptionInit }
-      | { kind: "ice"; candidate: RTCIceCandidateInit };
-    try {
-      if (msg.kind === "sdp" && msg.sdp.type === "answer" && !pc.remoteDescription) {
-        await pc.setRemoteDescription(msg.sdp);
-      } else if (msg.kind === "ice") {
-        await pc.addIceCandidate(msg.candidate);
-      }
-    } catch (err) {
-      console.warn("signal handling failed", err);
-    }
-  });
-}
-
-function listenForPeerInfo(signaling: SignalingClient): void {
-  signaling.on((m) => {
-    if (m.type === "peer-joined") {
-      setPeerName(m.device.name);
-    }
-  });
-}
-
-function waitForPeerJoined(signaling: SignalingClient): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+function waitForPeerJoined(signaling: SignalingClient): Promise<{ peerId: string; name: string }> {
+  return new Promise((resolve, reject) => {
     const off = signaling.on((m) => {
       if (m.type === "peer-joined") {
-        setPeerName(m.device.name);
         off();
-        resolve(m.peerId);
+        resolve({ peerId: m.peerId, name: m.device.name });
       } else if (m.type === "error") {
         off();
         reject(new Error(`${m.code}: ${m.message}`));
       }
-    });
-  });
-}
-
-function waitForSdp(
-  signaling: SignalingClient,
-  fromPeerId: string,
-  expect: "offer" | "answer",
-): Promise<RTCSessionDescriptionInit> {
-  return new Promise<RTCSessionDescriptionInit>((resolve) => {
-    signaling.onSignalFrom(fromPeerId, (data) => {
-      const msg = data as { kind?: string; sdp?: RTCSessionDescriptionInit };
-      if (msg.kind === "sdp" && msg.sdp?.type === expect) resolve(msg.sdp);
     });
   });
 }
@@ -957,7 +1711,7 @@ const ROUTES: Record<string, RouteMeta> = {
   },
   "/features": {
     title: "DropBeam features · 50 GB+ files, LAN mode, QR pairing, bulk share",
-    description: "Every DropBeam capability: mega-file streaming, LAN mode that works without internet, QR pairing, encrypted bulk transfers, browser-only cross-platform.",
+    description: "Every DropBeam capability: mega-file streaming, same-Wi-Fi transfers that stay on your network, QR pairing, encrypted bulk transfers, browser-only cross-platform.",
     stage: "blog",
   },
   "/privacy": {
@@ -1008,11 +1762,6 @@ function applyRouteMeta(path: string): void {
   else if (meta?.stage === "legal" && meta.legal) showLegal(meta.legal);
 })();
 
-// Update <title> + meta description whenever the user changes stages so
-// the in-app navigation also produces clean per-route SEO signals when
-// Google's JS-renderer crawls.
-const _originalGoto = goto;
-(window as unknown as { __goto?: typeof goto }).__goto = _originalGoto;
 
 /* ─────────────── memorable moments ─────────────── */
 
@@ -1122,9 +1871,18 @@ installBtn.addEventListener("click", async () => {
 });
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => { /* ignore */ });
-  });
+  if (import.meta.env.PROD) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/sw.js").catch(() => { /* ignore */ });
+    });
+  } else {
+    // In dev the SW would cache Vite's source modules and serve stale code
+    // after edits. Remove any registration left over from a previous build.
+    void navigator.serviceWorker.getRegistrations().then((regs) => {
+      for (const r of regs) void r.unregister();
+    });
+    void caches?.keys().then((keys) => keys.forEach((k) => void caches.delete(k)));
+  }
 }
 
 /* ─────────────── tiny helpers ─────────────── */
@@ -1156,10 +1914,10 @@ const popoverBody = $<HTMLElement>("#popover-body");
 const popoverArrow = $<HTMLElement>("#popover-arrow");
 
 const INFO_TEXT: Record<string, string> = {
-  lan: `<strong>Same Wi-Fi mode</strong> connects two devices on the same router <b>without using the internet at all</b>. WebRTC uses <code>host</code> ICE candidates (your private LAN IPs) and the data channel runs directly over your Wi-Fi. Perfect for hotel networks, planes, offline sites — anywhere internet is slow, expensive, or absent.`,
+  lan: `<strong>Same Wi-Fi mode</strong> connects two devices on the same router, and <b>your files never leave that network</b>. WebRTC uses only <code>host</code> ICE candidates (your private LAN IPs), so the data runs directly over your Wi-Fi. Both devices still need a little internet for the first handshake with our signaling server, unless you run DropBeam on your own network (<code>bun run lan</code>), which needs no internet at all.`,
   net: `<strong>Anywhere mode</strong> works across the open internet, even when the two devices are on different networks behind NATs. STUN servers help the peers discover their public addresses and hole-punch a direct path. If that fails, a TURN relay forwards encrypted bytes — we never see them in plaintext.`,
   passphrase: `By default your transfer is encrypted in transit (<code>DTLS</code> on the WebRTC channel). A <strong>passphrase</strong> adds a second layer: every chunk is encrypted with <code>AES-GCM-256</code> using a key derived from your passphrase via <code>PBKDF2-200k</code>. Even if someone broke into our signaling server (we don't store files anyway), they couldn't read your bytes.`,
-  folder: `Receivers stream bytes <b>directly to disk</b> using the File System Access API — files never get loaded into RAM, so even a 500&nbsp;GB transfer doesn't slow your browser. If you don't pick a folder, files go to your browser's default downloads folder. Chrome and Edge support this; Safari and Firefox fall back to ordinary downloads.`,
+  folder: `Receivers stream bytes <b>directly to disk</b> using the File System Access API — files never get loaded into RAM, so even a 500&nbsp;GB transfer doesn't slow your browser. Choosing a folder works in Chrome and Edge on computers. Without a folder (and always on phones, Safari and Firefox) files are held in the browser's private storage while they arrive \u2014 still streamed to disk, not RAM \u2014 and you save each one with a tap at the end. That needs about twice the free space while you save, and leftovers are deleted after 24 hours.`,
   transport: `<strong>LAN-direct</strong>: the two devices found each other on your Wi-Fi. Fastest, zero internet use.<br><br><strong>P2P-direct</strong>: STUN punched a direct hole through both NATs. Fast, peer-to-peer.<br><br><strong>TURN relayed</strong>: at least one peer is on a strict NAT and the bytes flow through a relay. Slower, but still end-to-end encrypted.`,
 };
 
@@ -1245,7 +2003,12 @@ const PRIVACY_HTML = `
 </ul>
 
 <h3>Cookies, analytics, tracking</h3>
-<p><strong>None.</strong> The only thing stored in your browser is a random device id in <code>localStorage</code> (so we can show the receiver your friendly device name) and your chosen connection mode. No cookies, no third-party analytics, no fingerprinting.</p>
+<p><strong>None.</strong> No cookies, no third-party analytics, no fingerprinting. What your browser keeps, on this device only:</p>
+<ul>
+  <li>A random device id and your chosen connection mode (<code>localStorage</code>).</li>
+  <li>A short list of your recent transfers: file names, sizes, the other device's name, and time. Never file contents, and never sent anywhere. Tap <em>Clear</em> under "Recent transfers" to erase it.</li>
+  <li>If you receive without choosing a folder, the files themselves sit in the browser's private storage until you save them, tap Clear, or 24 hours pass.</li>
+</ul>
 
 <h3>TURN relays</h3>
 <p>If both peers are behind strict NATs, a TURN relay may be used as a last resort. Even then the bytes are still end-to-end encrypted — the relay can see <em>that</em> bytes are flowing but can't read them.</p>
@@ -1300,9 +2063,9 @@ const BLOG_HTML = `
 
 <h3>What it does that others don't</h3>
 <ul>
-  <li><strong>Mega files, no Chrome bloat.</strong> Streams from disk straight to disk via the File System Access API. RAM stays at ~50 MB whether you're sending 5 MB or 50 GB. WeTransfer caps you at 2 GB and uploads to their servers; we don't.</li>
-  <li><strong>Single share or bulk share.</strong> Drop one file or fifty in one go. Everything is queued into a single transfer session, hashed, and verified on the other side.</li>
-  <li><strong>Works over the internet AND on a LAN with no internet.</strong> "Same Wi-Fi" mode uses only host candidates — two phones in a coffee shop with broken Wi-Fi can still send to each other. "Anywhere" mode punches through NATs with STUN; a TURN relay is the last-resort fallback.</li>
+  <li><strong>Mega files, no Chrome bloat.</strong> Streams from disk straight to disk via the File System Access API. Memory use stays flat whether you're sending 5 MB or 50 GB. Upload services cap free transfers and keep a copy on their servers; we don't. (Phones and Safari/Firefox receive into browser storage first, so there the limit is your free space.)</li>
+  <li><strong>Single share or bulk share.</strong> Drop one file or fifty in one go. Everything goes in one transfer session; the receiver re-reads every file and checks its SHA-256 against the sender's before calling it done.</li>
+  <li><strong>Works over the internet and on your local network.</strong> "Same Wi-Fi" mode uses only host candidates, so files never leave your network (fully offline if you self-host with <code>bun run lan</code>). "Anywhere" mode punches through NATs with STUN; a TURN relay is the last-resort fallback.</li>
   <li><strong>End-to-end encrypted in transit, optionally with your own passphrase.</strong> DTLS is on by default. Tick the passphrase box and every chunk is AES-GCM-256 encrypted with a key only you and the receiver know.</li>
   <li><strong>Browser-only. Cross-platform by accident.</strong> Phone ↔ Windows. Mac ↔ Android. iPad ↔ Linux. Same code path on every device — there's no platform-specific app to maintain.</li>
 </ul>
@@ -1365,12 +2128,12 @@ function releaseWakeLock(): void {
 
 // Re-acquire the wake lock if the page becomes visible again mid-transfer.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && active && !wakeLock) void acquireWakeLock();
+  if (document.visibilityState === "visible" && session && !wakeLock) void acquireWakeLock();
 });
 
 // Warn before leaving the page during an active transfer.
 window.addEventListener("beforeunload", (e) => {
-  if (active) {
+  if (session?.phase === "transfer") {
     e.preventDefault();
     e.returnValue = "A transfer is still in progress. Leave anyway?";
     return e.returnValue;

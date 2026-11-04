@@ -2,7 +2,7 @@
   "name": "dropbeam",
   "private": true,
   "version": "0.1.0",
-  "description": "Universal any-device-to-any-device file sharing platform.",
+  "description": "Peer-to-peer file transfer in the browser: any size, any device, no upload server.",
   "type": "module",
   "workspaces": [
     "apps/*",
@@ -11,16 +11,16 @@
   "scripts": {
     "dev:signaling": "cd apps/signaling && bun run dev",
     "start:signaling": "cd apps/signaling && bun run start",
-    "cli": "bun apps/cli/src/index.ts",
     "test": "bun test",
     "test:protocol": "bun test packages/protocol",
     "test:transfer": "bun test packages/transfer",
     "test:signaling": "bun test apps/signaling",
-    "e2e": "bash scripts/e2e.sh",
-    "typecheck": "cd packages/protocol && bun run typecheck && cd ../transfer && bun run typecheck && cd ../../apps/signaling && bun run typecheck && cd ../cli && bun run typecheck && cd ../web && bun run typecheck",
+    "typecheck": "cd packages/protocol && bun run typecheck && cd ../transfer && bun run typecheck && cd ../../apps/signaling && bun run typecheck && cd ../web && bun run typecheck",
     "dev:web": "cd apps/web && bun run dev",
     "build:web": "cd apps/web && bun run build",
-    "lan": "cd apps/web && bun run build && cd ../signaling && WEB_ROOT=../web/dist bun run start"
+    "lan": "cd apps/web && bun run build && cd ../signaling && WEB_ROOT=../web/dist bun run start",
+    "dev": "cd apps/web && bun run dev",
+    "build": "cd apps/web && bun run build"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -29,8 +29,5 @@
   },
   "engines": {
     "bun": ">=1.1.0"
-  },
-  "dependencies": {
-    "node-datachannel": "^0.32.2"
   }
 }

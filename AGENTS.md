@@ -1,93 +1,74 @@
-# DropBeam — Project Context for Codex
+# DropBeam — Project Context for Codex and other agents
 
 ## What this project is
 
-**DropBeam** is a universal file-sharing web app — an open-source AirDrop/WeTransfer alternative.
-- Browser-first, zero-account, end-to-end encrypted (AES-GCM-256)
-- WebRTC DataChannels for peer-to-peer transfer (no server holds files)
-- A signaling server (Bun/WebSocket) is only used for SDP/ICE handshake
+**DropBeam** is a browser-first, zero-account, peer-to-peer file transfer web app
+(an open AirDrop / WeTransfer alternative).
+- WebRTC DataChannels carry the files; no server ever holds them.
+- A Bun WebSocket **signaling server** only pairs devices via a short code and relays SDP/ICE.
+- Encrypted in transit (DTLS); optional passphrase adds AES-GCM-256 per chunk.
 
-**We are building the web UI.** Everything else (iOS, Android, CLI, desktop, QUIC relay) is out of scope for now.
+Scope: **the web app + signaling server only.** Native, CLI, Rust/QUIC and
+desktop experiments were moved to the `archive/native` branch.
 
-## Repo layout — what matters for web UI
+## Repo layout
 
 ```
 apps/
-  web/              ← THE web app we are working on
-    index.html      ← HTML shell (already exists, needs UI work)
-    src/
-      main.ts       ← all transfer logic, DOM wiring
-      styles.css    ← dark theme, Inter font
-  signaling/        ← Bun WebSocket server (run this first: bun run dev:signaling)
-
+  web/                 Vite + TS web app (the product)
+    index.html         All stages' markup (idle, send-pick, send-share, recv-pick, active, done, legal, blog)
+    src/main.ts        UI state machine, session orchestration, ICE handling, inbox (OPFS), history
+    src/styles.css     Neobrutalist design system (cream paper, black borders, hard shadows)
+    public/sw.js       Service worker (prod only): network-first HTML, cache-first /assets
+  signaling/           Bun WebSocket server: rooms, codes (30 min TTL), relay, rate limits, /healthz
 packages/
-  transfer/         ← core transfer engine (sender, receiver, router, worker)
-  protocol/         ← shared wire types (signaling + frame codec)
-  transfer-core/    ← Rust/WASM crypto (sha256, AES-GCM) — don't edit directly
+  protocol/            Wire types: signaling msgs, control msgs (manifest, file-end, complete, complete-ack, abort), 16-byte frame header
+  transfer/            Engine
+    src/sender.ts      Chunk + hash + (encrypt) + send over 4 lanes; waits for complete-ack
+    src/receiver.ts    Writes chunks, finishes a file only when all bytes arrived, re-reads + verifies SHA-256, capacity check
+    src/sinks/fsAccessSink.ts  Folder or OPFS writer: .dbpart partials, resume, "name (1).ext" on collision, sync-handle fallback
+    src/checksum.ts    Pure-TS streaming SHA-256 (constant memory)
+    src/signalingClient.ts  Multi-listener, buffers early signals, onClose, keep-alive
+    src/worker/        Web Worker host: engine runs off the main thread; main thread owns RTCPeerConnection
 ```
 
-## What iOS/Android folders are (ignore for web UI)
-
-The project is designed to be a *universal platform* — same protocol, every device.
-iOS uses MultipeerConnectivity + WebRTC. Android uses WifiP2p + WebRTC.
-Both speak the same 16-byte binary frame format defined in `packages/protocol/`.
-We are NOT building those. They're placeholders for future mobile apps.
-
-## How to start dev
+## Dev
 
 ```bash
+bun install
 bun run dev:signaling   # terminal 1 — ws://localhost:8787/ws
-bun run dev             # terminal 2 — Vite dev server for apps/web
+bun run dev             # terminal 2 — http://localhost:5173 (proxies /ws)
+bun test && bun run typecheck && bun run build
 ```
 
-## graphify — knowledge graph (auto-updated)
+`.claude/launch.json` has `signaling`, `web` and `web-preview` (prod build on :4173) configs.
+To test a transfer, open two tabs: sender in one, receiver joins via `/?c=CODE` in the other.
+Receiving without a chosen folder uses the browser's OPFS inbox (`dropbeam-inbox`), so it works in automation.
 
-The graph lives in `graphify-out/`. Run `/graphify .` to rebuild it after major code changes.
-- `graphify-out/graph.html` — default interactive graph (open in browser)
-- `graphify-out/dropbeam-graph.html` — polished dashboard UI
-- `graphify-out/GRAPH_REPORT.md` — god nodes, surprising connections
+## Deploy
 
-**Key god nodes** (most connected = most important):
-1. `TransferSender` / `TransferReceiver` — core file transfer engine
-2. `SignalingClient` — WebSocket signaling (pairs sender ↔ receiver via code)
-3. `WorkerTransferHost` — offloads transfer to a Web Worker (keeps UI smooth)
-4. `decideRoute` — smart transport ladder (loopback → LAN-QUIC → WebRTC → relay)
+Vercel builds `apps/web` from the **repo root** (root `vercel.json`). Signaling runs on a
+WebSocket-capable host (Koyeb/Render/Fly; `apps/signaling/Dockerfile`, `render.yaml`).
+Build-time env: `VITE_SIGNALING_URL` (required in prod), `VITE_TURN_URLS/USERNAME/CREDENTIAL` (optional).
+See DEPLOY.md.
 
-**Surprising connections found by graphify:**
-- QUIC Relay (`protocol.rs`) and TS Transfer Protocol (`transfer.ts`) evolved in parallel — they implement the same frame format independently
-- `Web App main.ts` reaches directly into worker protocol types (`WorkerFileInput`) — tight coupling worth refactoring
+## Invariants — don't break these
 
-## Architecture (for context when building UI)
+- Separate DataChannels are **not ordered relative to each other**: never act on a control message
+  (file-end / complete) as if all data has arrived. The receiver counts bytes; the sender waits for `complete-ack`.
+- Frame = 16-byte header + payload (+28 B when encrypted) must fit **64 KiB** → `DEFAULT_CHUNK_SIZE = 64 KiB − 64`.
+- Never buffer whole files in memory (no `arrayBuffer()` on user files, no whole-file digests).
+- Never overwrite or splice user files: write `.dbpart`, verify, then rename to a free name.
+- Secure-context-only APIs (`crypto.randomUUID`, `crypto.subtle`, OPFS, folder picker) are missing on
+  plain `http://<lan-ip>`; degrade with a clear message instead of crashing.
+- The worker's `bufferedAmount` is a cached copy; the main thread must report state when thresholds change.
 
-```
-User picks file → main.ts → SignalingClient.createRoom() → server gives code
-                                                     ↓ share code with peer
-Receiver enters code → SignalingClient.joinRoom(code) → server relays SDP/ICE
-                                                     ↓
-WebRTC DataChannel established peer-to-peer (no server sees file data)
-                                                     ↓
-WorkerTransferHost → Web Worker → TransferSender → chunked, encrypted frames → DataChannel
-                                               → TransferReceiver → FileSystemAccessAPI → saved to disk
-```
+## Status
 
-## Current web UI state
+Done: deploy config + config banner, reliable signaling/ICE, cancel/timeout/friendly errors, integrity
+verification, resume, collision-safe saving, receive-anywhere via OPFS with Save/Share/Clear and quota
+checks, big-file warnings, connection stepper, per-file progress, code expiry + renew, Try again,
+recent-transfers history, mobile layout.
 
-The web app has a working but minimal UI:
-- Dark theme, Inter font, gradient accent
-- Send tab: drag-drop zone + file list + "Create share code" button
-- Receive tab: code input + folder picker + "Join and receive" button
-- Progress bar + speed/ETA stats + status messages
-- No peer discovery, no transfer history, no QR code share, no mobile-friendly layout improvements
-
-## What to build next (web UI)
-
-- [ ] QR code display alongside the share code (mobile-to-desktop handoff)
-- [ ] Copy-to-clipboard button for the share code
-- [ ] Transfer history / recent files panel
-- [ ] Connection status indicator (connecting → connected → transferring → done)
-- [ ] Drag-to-reorder or remove individual files from queue
-- [ ] Multi-file progress breakdown (per-file progress bars)
-- [ ] Mobile responsive polish (the current UI works but can be improved)
-- [ ] Passphrase / encryption toggle UI
-- [ ] Room TTL countdown timer
-- [ ] Error recovery UX (retry button on failure)
+Ideas not built yet: folder sending (webkitdirectory), receiver-side accept/decline prompt, nearby
+device discovery, server-side TURN credential minting, i18n.
