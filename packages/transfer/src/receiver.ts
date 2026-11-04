@@ -3,6 +3,7 @@ import {
   type ControlMsg,
   type Manifest,
 } from "@dropbeam/protocol";
+import { sha256OfStream } from "./checksum.js";
 import { decryptChunk, deriveKey } from "./encryption.js";
 import { type DataChannel, type PeerConnection } from "./peer.js";
 import type {
@@ -49,6 +50,8 @@ export class TransferReceiver {
   /** Sum of (resumeOffset across all files) + new bytes written. */
   private totalReceived = 0;
   private lastProgressAt = 0;
+  /** Set once the transfer has failed; later frames are ignored. */
+  private failed = false;
   /** Sender sent `complete`; finalize as soon as the last file is fully written. */
   private completeRequested = false;
   private completeResolve: (() => void) | null = null;
@@ -103,10 +106,17 @@ export class TransferReceiver {
         if (typeof data !== "string") {
           // Datachannel can hand us either an ArrayBuffer or a Uint8Array
           // depending on the runtime; normalize.
-          const ab = data instanceof ArrayBuffer ? data : (data as ArrayBufferView).buffer;
+          const bytes =
+            data instanceof ArrayBuffer
+              ? new Uint8Array(data)
+              : new Uint8Array(
+                  (data as ArrayBufferView).buffer,
+                  (data as ArrayBufferView).byteOffset,
+                  (data as ArrayBufferView).byteLength,
+                );
           // Important: we enqueue onto the same serial queue so writes don't race
           // with file-end / complete control messages.
-          this.enqueueData(new Uint8Array(ab as ArrayBuffer));
+          this.enqueueData(bytes);
         }
       };
     }
@@ -216,7 +226,7 @@ export class TransferReceiver {
   }
 
   private async onDataFrame(buf: Uint8Array): Promise<void> {
-    if (!this.currentManifest) return;
+    if (!this.currentManifest || this.failed) return;
     const { header, payload } = decodeFrame(buf);
     const file = this.files.get(header.fileId);
     if (!file || file.done) return;
@@ -227,7 +237,13 @@ export class TransferReceiver {
         this.fail(new Error("encrypted frame without key"));
         return;
       }
-      plaintext = await decryptChunk(this.cryptoKey, payload);
+      try {
+        plaintext = await decryptChunk(this.cryptoKey, payload);
+      } catch {
+        // AES-GCM auth failure: almost always a passphrase mismatch.
+        this.abort("wrong-passphrase");
+        return;
+      }
     } else {
       plaintext = payload;
     }
@@ -288,14 +304,34 @@ export class TransferReceiver {
     if (file.done || file.pendingSha === null || !this.currentManifest) return;
     if (file.resumeOffset + file.bytesReceived < file.manifestEntry.size) return;
     file.done = true;
-    // v1: trust the sender-supplied sha + DTLS integrity. Sinks may verify
-    // independently. Passed through to sink.finish() so the sink can record it.
-    await file.sink.finish(file.pendingSha);
+    const sha = file.pendingSha;
+    const transferId = this.currentManifest.transferId;
+    const result = await file.sink.finish(sha);
+    const savedAs = result && result.savedAs !== file.manifestEntry.name ? result.savedAs : undefined;
+
+    // Integrity: re-read what actually landed on disk and compare with the
+    // sender's sha256 (computed over the whole source file). Constant memory.
+    let verified = false;
+    if (file.sink.readBack) {
+      this.emit({ type: "verifying", transferId, fileId });
+      const actual = await sha256OfStream(file.sink.readBack());
+      if (actual !== sha) {
+        await file.sink.discard?.().catch(() => {});
+        const err = new Error(
+          `integrity-check-failed: "${file.manifestEntry.name}" didn't match the sender's copy and was deleted`,
+        );
+        this.sendControl({ type: "abort", transferId, reason: "integrity-check-failed" });
+        throw err;
+      }
+      verified = true;
+    }
     this.emit({
       type: "file-done",
-      transferId: this.currentManifest.transferId,
+      transferId,
       fileId,
-      sha256: file.pendingSha,
+      sha256: sha,
+      verified,
+      ...(savedAs ? { savedAs } : {}),
     });
     if (this.completeRequested && this.allDone()) this.finalizeComplete();
   }
@@ -324,7 +360,24 @@ export class TransferReceiver {
     this.completeReject = null;
   }
 
+  /** Cancel from the receiving side: tell the sender, close files, reject done(). */
+  abort(reason = "receiver-cancel"): void {
+    if (this.currentManifest) {
+      this.sendControl({ type: "abort", transferId: this.currentManifest.transferId, reason });
+    }
+    this.fail(new Error(reason));
+  }
+
   private fail(err: Error): void {
+    if (this.failed) return;
+    this.failed = true;
+    // Close unfinished files (after any write already in flight) so partials
+    // are trimmed to their gap-free prefix and can be resumed later.
+    const pending = [...this.files.values()].filter((f) => !f.done);
+    this.controlQueue = this.controlQueue
+      .catch(() => {})
+      .then(() => Promise.all(pending.map((f) => f.sink.abort(err.message).catch(() => {}))))
+      .then(() => {});
     if (this.currentManifest) {
       this.emit({ type: "error", transferId: this.currentManifest.transferId, error: err });
     }

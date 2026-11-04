@@ -38,6 +38,8 @@ export class TransferSender {
   private control!: DataChannel;
   private lanes: DataChannel[] = [];
   private aborted = false;
+  /** Reason the receiver gave if it aborted (e.g. "integrity-check-failed"). */
+  private remoteAbort: string | null = null;
 
   constructor(
     private readonly pc: PeerConnection,
@@ -76,6 +78,17 @@ export class TransferSender {
   private transferId?: string;
 
   async send(transferId: string, files: FileSource[]): Promise<void> {
+    try {
+      await this.sendInner(transferId, files);
+    } catch (e) {
+      // If the receiver told us why it stopped, that's the real error — not
+      // the "channel closed" fallout that follows it.
+      if (this.remoteAbort) throw this.abortError();
+      throw e;
+    }
+  }
+
+  private async sendInner(transferId: string, files: FileSource[]): Promise<void> {
     this.transferId = transferId;
     await waitForOpen(this.control);
     await Promise.all(this.lanes.map((l) => waitForOpen(l)));
@@ -114,6 +127,21 @@ export class TransferSender {
     const ack = await ackPromise;
     if (!ack.accept) throw new Error(`receiver rejected: ${ack.reason ?? "no reason"}`);
 
+    // Listen for a receiver-side abort for the rest of the transfer (e.g. a
+    // failed integrity check or the user cancelling on the other device).
+    this.control.onmessage = (data: string | ArrayBuffer) => {
+      if (typeof data !== "string") return;
+      try {
+        const m = JSON.parse(data) as ControlMsg;
+        if (m.type === "abort" && m.transferId === transferId) {
+          this.remoteAbort = m.reason;
+          this.aborted = true;
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
     let cryptoKey: CryptoKey | undefined;
     if (encryption && this.encPassphrase) {
       cryptoKey = await deriveKey(this.encPassphrase, encryption.salt);
@@ -127,7 +155,7 @@ export class TransferSender {
     const fileById = new Map(files.map((f) => [f.id, f]));
 
     for (const file of files) {
-      if (this.aborted) throw new Error("aborted");
+      if (this.aborted) throw this.abortError();
       const resumeOffset = ack.resumeFrom?.[file.id] ?? 0;
       const startChunkIndex = Math.floor(resumeOffset / this.chunkSize);
 
@@ -135,11 +163,25 @@ export class TransferSender {
 
       const hasher = await makeSha256();
       let chunkIndex = 0;
-      let fileBytesSent = resumeOffset;
+      let fileBytesSent = startChunkIndex * this.chunkSize;
+
+      // The file-end sha256 must cover the WHOLE file so the receiver can
+      // verify what's on its disk — including the prefix it already had from
+      // an earlier session. Hash that prefix locally (read, not sent).
+      const prefixBytes = startChunkIndex * this.chunkSize;
+      if (prefixBytes > 0) {
+        let hashed = 0;
+        for await (const chunk of rechunk(file.open(0), this.chunkSize)) {
+          if (this.aborted) throw this.abortError();
+          hasher.update(chunk);
+          hashed += chunk.byteLength;
+          if (hashed >= prefixBytes) break;
+        }
+      }
 
       const stream = file.open(startChunkIndex * this.chunkSize);
       for await (const chunk of rechunk(stream, this.chunkSize)) {
-        if (this.aborted) throw new Error("aborted");
+        if (this.aborted) throw this.abortError();
         // hash plaintext
         hasher.update(chunk);
         const isLast =
@@ -207,13 +249,17 @@ export class TransferSender {
     // Don't report success until the receiver confirms every byte is on disk:
     // `complete` can overtake in-flight data on the lanes, and tearing the
     // connection down early would silently truncate the last file(s).
-    const confirmed = this.awaitCompleteAck(transferId);
+    if (this.aborted) throw this.abortError();
+    // The receiver re-reads + hashes the last file before acking, so allow
+    // time proportional to the largest file (~25 MB/s worst-case disk read).
+    const largest = files.reduce((m, f) => Math.max(m, f.size), 0);
+    const confirmed = this.awaitCompleteAck(transferId, 120_000 + Math.ceil(largest / 25_000));
     this.sendControl({ type: "complete", transferId });
     await confirmed;
     this.emit({ type: "complete", transferId });
   }
 
-  private awaitCompleteAck(transferId: string, timeoutMs = 120_000): Promise<void> {
+  private awaitCompleteAck(transferId: string, timeoutMs: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.control.onmessage = null;
@@ -238,6 +284,10 @@ export class TransferSender {
         }
       };
     });
+  }
+
+  private abortError(): Error {
+    return new Error(this.remoteAbort ? `receiver aborted: ${this.remoteAbort}` : "aborted");
   }
 
   private sendControl(m: ControlMsg): void {

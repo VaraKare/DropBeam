@@ -539,6 +539,8 @@ interface Session {
   failed: Promise<never>;
   fail(err: Error): void;
   cancelled: boolean;
+  /** Set once the transfer finished successfully. */
+  completed: boolean;
   tornDown: boolean;
 }
 
@@ -565,6 +567,7 @@ function newSession(role: Session["role"]): Session {
     failed,
     fail: (err) => reject(err),
     cancelled: false,
+    completed: false,
     tornDown: false,
   };
   // Losing signaling only matters while we still need it for the handshake;
@@ -590,7 +593,14 @@ function teardown(s: Session, abortTransfer: boolean): void {
   if (s.tornDown) return;
   s.tornDown = true;
   if (abortTransfer) { try { s.host?.abort("user-cancel"); } catch { /* ignore */ } }
-  try { s.host?.dispose(); } catch { /* ignore */ }
+  const host = s.host;
+  if (host) {
+    // After a cancel/failure the worker still needs a moment to close (and
+    // trim) partially-written files so they can be resumed; don't kill it mid-write.
+    const dispose = (): void => { try { host.dispose(); } catch { /* ignore */ } };
+    if (s.completed) dispose();
+    else window.setTimeout(dispose, 2000);
+  }
   try { s.signaling.close(); } catch { /* ignore */ }
   try { s.pc?.close(); } catch { /* ignore */ }
   if (s.transportPoll !== null) clearInterval(s.transportPoll);
@@ -734,10 +744,19 @@ function friendlyError(err: unknown): string {
   if (/room-full/.test(raw)) return "Someone else already joined that transfer.";
   if (/rate-limited/.test(raw)) return "Too many attempts. Wait a few seconds and try again.";
   if (/passphrase-required/.test(raw)) return "The sender protected this transfer with a passphrase. Enter it and try again.";
-  if (/OperationError|operation-specific|decrypt/i.test(raw)) return "Wrong passphrase — the files couldn't be decrypted.";
+  if (/receiver aborted: wrong-passphrase/.test(raw)) return "The receiver entered a different passphrase, so nothing was saved.";
+  if (/wrong-passphrase|OperationError|operation-specific|decrypt/i.test(raw)) return "Wrong passphrase — the files couldn't be decrypted, so nothing was saved.";
   if (/sender aborted|user-cancel/.test(raw)) return "The sender cancelled the transfer.";
-  if (/control channel closed/.test(raw)) return "The connection to the other device dropped.";
-  return raw;
+  if (/control channel closed|channel (closed|closing)|during drain/.test(raw)) {
+    return "The other device cancelled or lost its connection. Send again \u2014 the transfer will pick up where it stopped.";
+  }
+  if (/integrity-check-failed/.test(raw)) {
+    return /receiver aborted/.test(raw)
+      ? "A file arrived corrupted on the other device and was deleted. Try sending again."
+      : raw.replace(/^.*integrity-check-failed: /, "Integrity check failed: ") + ". Try again.";
+  }
+  if (/receiver aborted|receiver-cancel/.test(raw)) return "The receiver cancelled the transfer.";
+  return raw || "Something went wrong. Please try again.";
 }
 
 function resetActiveUI(peerLabel: string): void {
@@ -797,6 +816,7 @@ async function startSend(files: File[], passphrase: string | undefined): Promise
 
     await race(s, link.start());
     await race(s, transfer);
+    s.completed = true;
     onTransferDone("Files delivered.");
   } catch (err) {
     if (!s.cancelled) onTransferFailed(friendlyError(err));
@@ -860,6 +880,7 @@ async function startReceive(
 
     await race(s, link.start());
     await race(s, transfer);
+    s.completed = true;
     onTransferDone(dir.name ? `Saved to “${dir.name}”.` : "Files saved.");
   } catch (err) {
     if (!s.cancelled) onTransferFailed(friendlyError(err));
@@ -946,11 +967,21 @@ function onTransferEvent(e: WorkerTransferEvent, sentFiles: File[]): void {
       }
       break;
     }
+    case "verifying": {
+      const el = fileStatusEls.get(e.fileId);
+      if (el) el.textContent = "verifying…";
+      break;
+    }
     case "file-done": {
       const el = fileStatusEls.get(e.fileId);
       if (el) {
-        el.textContent = "✓ done";
+        el.textContent = e.verified ? "✓ verified" : "✓ sent";
+        el.title = `SHA-256 ${e.sha256}`;
         el.classList.add("ok");
+      }
+      if (e.savedAs) {
+        const nameEl = el?.parentElement?.querySelector(".file-name");
+        if (nameEl) nameEl.textContent = `${nameEl.textContent} → ${e.savedAs}`;
       }
       break;
     }

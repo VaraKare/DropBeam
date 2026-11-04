@@ -67,6 +67,7 @@ class WorkerSession {
         break;
       case "abort":
         this.sender?.abort(msg.reason ?? "abort");
+        this.receiver?.abort(msg.reason ?? "abort");
         break;
       case "ch:opened": {
         const ch = this.pc?._channel(msg.channelId);
