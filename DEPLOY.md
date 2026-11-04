@@ -106,6 +106,11 @@ bun run lan     # builds the web app and serves it from the signaling server
 Open `http://<your-LAN-IP>:8787` on both devices. Same-origin signaling is
 detected automatically, so no env vars are needed.
 
+Browsers only let a page save files on `https://` or `localhost`, so over
+plain `http://<lan-ip>` other devices can send but not receive (the app says
+so). For receiving on other devices, put HTTPS in front, e.g. Caddy with
+`tls internal`.
+
 ---
 
 ## Deploy checklist

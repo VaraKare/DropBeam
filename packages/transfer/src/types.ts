@@ -1,9 +1,9 @@
 /**
- * Runtime-agnostic interfaces. The transfer engine never imports `werift`
- * or browser globals directly — it only sees these abstractions.
+ * Runtime-agnostic interfaces. The transfer engine never touches browser
+ * globals directly — it only sees these abstractions.
  *
- * On the browser: thin adapter around native `RTCPeerConnection`.
- * On Node: thin adapter around `werift`'s `RTCPeerConnection`.
+ * In the browser: a worker-side proxy over the main thread's native
+ * `RTCPeerConnection`. In tests: the in-memory pair (`inMemoryPair.ts`).
  */
 
 export type IceCandidate = unknown;

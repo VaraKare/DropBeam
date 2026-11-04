@@ -11,6 +11,10 @@
 const PBKDF2_ITERATIONS = 200_000;
 
 export async function deriveKey(passphrase: string, saltB64: string): Promise<CryptoKey> {
+  if (!globalThis.crypto?.subtle) {
+    // Web Crypto only exists on https:// or localhost pages.
+    throw new Error("passphrase-unavailable: passphrase encryption needs the page to be opened over https://");
+  }
   const salt = base64ToBytes(saltB64);
   const km = await crypto.subtle.importKey(
     "raw",

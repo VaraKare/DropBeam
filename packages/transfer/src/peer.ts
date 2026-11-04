@@ -1,7 +1,7 @@
 /**
  * Runtime-agnostic peer abstraction. The transfer engine consumes this
  * interface and never touches `RTCPeerConnection` directly. Concrete
- * adapters (browser native, werift on Node) implement `PeerConnection`.
+ * adapters (browser worker proxy, in-memory test pair) implement `PeerConnection`.
  */
 
 import type { IceCandidate, SessionDescription } from "./types.js";

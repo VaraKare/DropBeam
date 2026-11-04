@@ -119,11 +119,25 @@ const DEVICE: DeviceInfo = {
   userAgent: navigator.userAgent,
 };
 
+/**
+ * `crypto.randomUUID()` only exists in secure contexts (https / localhost).
+ * A LAN deployment opened as http://192.168.x.x isn't one, so build a v4 UUID
+ * from getRandomValues (available everywhere) instead of crashing on load.
+ */
+function uuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6]! & 0x0f) | 0x40;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 function persistentDeviceId(): string {
   const k = "dropbeam.deviceId";
   let v = localStorage.getItem(k);
   if (!v) {
-    v = crypto.randomUUID();
+    v = uuid();
     localStorage.setItem(k, v);
   }
   return v;
@@ -232,7 +246,7 @@ function refreshConnPill(): void {
   connPill.classList.remove("pill-muted", "pill-net", "pill-lan");
   if (env.mode === "lan") {
     connPill.classList.add("pill-lan");
-    connPillLabel.textContent = env.sameOrigin ? "LAN · no internet needed" : "LAN mode";
+    connPillLabel.textContent = env.sameOrigin ? "LAN · no internet needed" : "Same Wi-Fi mode";
   } else {
     connPill.classList.add("pill-net");
     connPillLabel.textContent = "Internet mode";
@@ -444,7 +458,14 @@ const recvStorageEl = $<HTMLElement>("#recv-storage");
 const recvLeftovers = $<HTMLElement>("#recv-leftovers");
 const recvLeftoversText = $<HTMLElement>("#recv-leftovers-text");
 
-if (!showDirectoryPicker) {
+/** Plain http:// on a LAN IP: browsers disable file saving and Web Crypto. */
+const INSECURE_CONTEXT_MSG =
+  "This page is open over plain http://, so the browser won't let it save files. Open DropBeam over https:// (or on localhost) to receive here. Sending still works.";
+
+if (!window.isSecureContext) {
+  recvPickDirBtn.classList.add("hidden");
+  recvDirName.textContent = INSECURE_CONTEXT_MSG;
+} else if (!showDirectoryPicker) {
   recvPickDirBtn.classList.add("hidden");
   recvDirName.textContent = hasBrowserStorage
     ? "Files are held in this browser while they arrive. When it's done you tap Save (on iPhone: Share \u2192 Save to Files)."
@@ -785,6 +806,7 @@ function friendlyError(err: unknown): string {
         : `Not enough space in this browser: needs ${m[1]}, can store about ${m[2]}. Free up space on this device, or use Chrome or Edge on a computer and choose a folder.`;
     }
   }
+  if (/passphrase-unavailable/.test(raw)) return "Passphrase encryption needs DropBeam to be opened over https://. Remove the passphrase or open the https:// address.";
   if (/rate-limited/.test(raw)) return "Too many attempts. Wait a few seconds and try again.";
   if (/passphrase-required/.test(raw)) return "The sender protected this transfer with a passphrase. Enter it and try again.";
   if (/receiver aborted: wrong-passphrase/.test(raw)) return "The receiver entered a different passphrase, so nothing was saved.";
@@ -860,7 +882,7 @@ async function startSend(files: File[], passphrase: string | undefined): Promise
     const link = createLink(s, peer.peerId);
     s.transportPoll = startTransportPoll(link.pc);
     s.host = new WorkerTransferHost({ worker: () => new TransferWorker(), peerConnection: link.pc });
-    const transfer = s.host.send(crypto.randomUUID(), files, {
+    const transfer = s.host.send(uuid(), files, {
       ...(passphrase ? { encryptionPassphrase: passphrase } : {}),
       onEvent: (e) => onTransferEvent(e, files),
     });
@@ -968,6 +990,7 @@ const INBOX = "dropbeam-inbox";
 const INBOX_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 async function inboxDir(): Promise<FileSystemDirectoryHandle> {
+  if (!window.isSecureContext) throw new Error(INSECURE_CONTEXT_MSG);
   if (!hasBrowserStorage) {
     throw new Error("This browser can't save received files. Please use a current version of Chrome, Edge, Safari or Firefox.");
   }
@@ -1330,7 +1353,7 @@ function setTransport(kind: "handshaking" | "lan" | "p2p" | "relayed"): void {
       break;
     case "lan":
       transportPill.classList.add("pill-lan");
-      transportLabel.textContent = "LAN-direct · no internet";
+      transportLabel.textContent = "LAN-direct · stays on your Wi-Fi";
       break;
     case "p2p":
       transportPill.classList.add("pill-ok");
@@ -1688,7 +1711,7 @@ const ROUTES: Record<string, RouteMeta> = {
   },
   "/features": {
     title: "DropBeam features · 50 GB+ files, LAN mode, QR pairing, bulk share",
-    description: "Every DropBeam capability: mega-file streaming, LAN mode that works without internet, QR pairing, encrypted bulk transfers, browser-only cross-platform.",
+    description: "Every DropBeam capability: mega-file streaming, same-Wi-Fi transfers that stay on your network, QR pairing, encrypted bulk transfers, browser-only cross-platform.",
     stage: "blog",
   },
   "/privacy": {
@@ -1891,7 +1914,7 @@ const popoverBody = $<HTMLElement>("#popover-body");
 const popoverArrow = $<HTMLElement>("#popover-arrow");
 
 const INFO_TEXT: Record<string, string> = {
-  lan: `<strong>Same Wi-Fi mode</strong> connects two devices on the same router <b>without using the internet at all</b>. WebRTC uses <code>host</code> ICE candidates (your private LAN IPs) and the data channel runs directly over your Wi-Fi. Perfect for hotel networks, planes, offline sites — anywhere internet is slow, expensive, or absent.`,
+  lan: `<strong>Same Wi-Fi mode</strong> connects two devices on the same router, and <b>your files never leave that network</b>. WebRTC uses only <code>host</code> ICE candidates (your private LAN IPs), so the data runs directly over your Wi-Fi. Both devices still need a little internet for the first handshake with our signaling server, unless you run DropBeam on your own network (<code>bun run lan</code>), which needs no internet at all.`,
   net: `<strong>Anywhere mode</strong> works across the open internet, even when the two devices are on different networks behind NATs. STUN servers help the peers discover their public addresses and hole-punch a direct path. If that fails, a TURN relay forwards encrypted bytes — we never see them in plaintext.`,
   passphrase: `By default your transfer is encrypted in transit (<code>DTLS</code> on the WebRTC channel). A <strong>passphrase</strong> adds a second layer: every chunk is encrypted with <code>AES-GCM-256</code> using a key derived from your passphrase via <code>PBKDF2-200k</code>. Even if someone broke into our signaling server (we don't store files anyway), they couldn't read your bytes.`,
   folder: `Receivers stream bytes <b>directly to disk</b> using the File System Access API — files never get loaded into RAM, so even a 500&nbsp;GB transfer doesn't slow your browser. Choosing a folder works in Chrome and Edge on computers. Without a folder (and always on phones, Safari and Firefox) files are held in the browser's private storage while they arrive \u2014 still streamed to disk, not RAM \u2014 and you save each one with a tap at the end. That needs about twice the free space while you save, and leftovers are deleted after 24 hours.`,
@@ -2040,9 +2063,9 @@ const BLOG_HTML = `
 
 <h3>What it does that others don't</h3>
 <ul>
-  <li><strong>Mega files, no Chrome bloat.</strong> Streams from disk straight to disk via the File System Access API. RAM stays at ~50 MB whether you're sending 5 MB or 50 GB. WeTransfer caps you at 2 GB and uploads to their servers; we don't.</li>
-  <li><strong>Single share or bulk share.</strong> Drop one file or fifty in one go. Everything is queued into a single transfer session, hashed, and verified on the other side.</li>
-  <li><strong>Works over the internet AND on a LAN with no internet.</strong> "Same Wi-Fi" mode uses only host candidates — two phones in a coffee shop with broken Wi-Fi can still send to each other. "Anywhere" mode punches through NATs with STUN; a TURN relay is the last-resort fallback.</li>
+  <li><strong>Mega files, no Chrome bloat.</strong> Streams from disk straight to disk via the File System Access API. Memory use stays flat whether you're sending 5 MB or 50 GB. Upload services cap free transfers and keep a copy on their servers; we don't. (Phones and Safari/Firefox receive into browser storage first, so there the limit is your free space.)</li>
+  <li><strong>Single share or bulk share.</strong> Drop one file or fifty in one go. Everything goes in one transfer session; the receiver re-reads every file and checks its SHA-256 against the sender's before calling it done.</li>
+  <li><strong>Works over the internet and on your local network.</strong> "Same Wi-Fi" mode uses only host candidates, so files never leave your network (fully offline if you self-host with <code>bun run lan</code>). "Anywhere" mode punches through NATs with STUN; a TURN relay is the last-resort fallback.</li>
   <li><strong>End-to-end encrypted in transit, optionally with your own passphrase.</strong> DTLS is on by default. Tick the passphrase box and every chunk is AES-GCM-256 encrypted with a key only you and the receiver know.</li>
   <li><strong>Browser-only. Cross-platform by accident.</strong> Phone ↔ Windows. Mac ↔ Android. iPad ↔ Linux. Same code path on every device — there's no platform-specific app to maintain.</li>
 </ul>
