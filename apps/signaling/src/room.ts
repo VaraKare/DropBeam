@@ -56,10 +56,13 @@ export class RoomManager {
     if (this.byId.size >= this.opts.maxRooms) {
       throw new Error("server-full");
     }
-    const ttl = Math.min(
-      this.opts.maxTtlMs,
-      ttlSeconds ? ttlSeconds * 1000 : this.opts.defaultTtlMs,
-    );
+    // Defense in depth: the message parser already clamps ttlSeconds, but a
+    // non-finite TTL here would create a room that never expires (audit #9).
+    const requested =
+      typeof ttlSeconds === "number" && Number.isFinite(ttlSeconds) && ttlSeconds > 0
+        ? ttlSeconds * 1000
+        : this.opts.defaultTtlMs;
+    const ttl = Math.min(this.opts.maxTtlMs, requested);
     const room: Room = {
       roomId: makeRoomId(),
       code: this.uniqueCode(),

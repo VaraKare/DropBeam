@@ -81,6 +81,7 @@ sequenceDiagram
     R->>S: resume offsets (if any)
     loop each 64 KB chunk, across 4 data lanes
         S->>R: [16-byte header][payload]
+        R-->>S: credit (every 1 MiB written; sender pauses at 16 MiB in flight)
     end
     S->>R: file-end, complete (control channel)
     R->>R: wait until EVERY byte arrived, re-read, verify SHA-256
@@ -139,13 +140,15 @@ DropBeam/
 │       ├── src/room.ts         Rooms: create/join/leave, 30-min TTL, capacity, pruning
 │       ├── src/codes.ts        Human-friendly codes (K7-9P3-MX2A), ids, tokens
 │       ├── src/rateLimit.ts    Token bucket per IP
+│       ├── src/config.ts       Validated env settings, client IP via TRUST_PROXY_HOPS
 │       ├── Dockerfile          Production container
 │       └── test/               codes, rate limit, server
 │
 ├── packages/
 │   ├── protocol/               Shared "language" both sides speak
 │   │   ├── src/signaling.ts    Signaling message types
-│   │   └── src/transfer.ts     Manifest, control messages, 16-byte frame header, chunk size
+│   │   ├── src/transfer.ts     Manifest, control messages, 16-byte frame header, chunk size, flow-control limits
+│   │   └── src/validate.ts     Runtime validation of everything from the network
 │   │
 │   └── transfer/               ★ THE ENGINE
 │       ├── src/sender.ts       Read file → hash → (encrypt) → 4 lanes; wait for complete-ack
@@ -160,7 +163,10 @@ DropBeam/
 └── docs/
     ├── MAP.md                  ← you are here
     ├── ROADMAP.md              To-dos, test plan, features, scaling, Docker, caching
-    └── PRODUCT.md              What it's for, competitors, costs, growth plan
+    ├── PRODUCT.md              What it's for, competitors, costs, growth plan
+    ├── PHASES.md               What is being built now, phase by phase
+    ├── audit/                  External audit, our response, verification records
+    └── adr/                    Architecture decisions
 ```
 
 Other docs at the root: `README.md` (overview), `SETUP.md` (run locally),
@@ -189,7 +195,9 @@ Other docs at the root: `README.md` (overview), `SETUP.md` (run locally),
 | Data lanes | 4 (+1 control) | `DEFAULT_PARALLEL_LANES` in `packages/protocol/src/transfer.ts` |
 | Code lifetime | 30 min (max 4 h) | `apps/signaling/src/server.ts` |
 | Max rooms per server | 10,000 (`MAX_ROOMS`) | env |
-| Peers per room | 8 (`ROOM_CAPACITY`); the app uses 2 | env |
+| Peers per room | 2 (`ROOM_CAPACITY`) | env |
+| Flow-control window | 16 MiB in flight, credit every 1 MiB | `packages/protocol/src/transfer.ts` (ADR-001) |
+| Client IP behind proxies | `TRUST_PROXY_HOPS` (0 = socket address) | env (ADR-003) |
 | Rate limits per IP | 30 msgs burst, 15/s; 5 room-creates burst, 1 per 10 s | `server.ts` |
 | Max signaling message | 64 KiB | `MAX_MSG_BYTES` |
 | Connection timeout | 30 s | `main.ts` |

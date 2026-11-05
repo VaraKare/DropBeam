@@ -16,6 +16,8 @@ export interface FileSource {
   size: number;
   mime?: string;
   relativePath?: string;
+  /** Last-modified time (ms); part of the receiver's partial-file identity (ADR-002). */
+  lastModified?: number;
   /** Stream returning chunks of arbitrary size; transfer engine will re-chunk as needed. */
   open(offset?: number): AsyncIterable<Uint8Array>;
   /** Optional pre-computed sha256 hex; if absent, sender will compute on the fly. */
@@ -42,6 +44,16 @@ export interface FileSink {
   discard?(): Promise<void>;
 }
 
+/** What a sink factory learns about each incoming file (from the validated manifest). */
+export interface SinkFileMeta {
+  id: number;
+  name: string;
+  size: number;
+  mime?: string;
+  relativePath?: string;
+  lastModified?: number;
+}
+
 export interface FileSinkFactory {
   /**
    * Optional: return an error string if `bytesNeeded` won't fit (checked before
@@ -49,8 +61,8 @@ export interface FileSinkFactory {
    */
   checkCapacity?(bytesNeeded: number): Promise<string | null>;
   /** Returns the byte offset to resume from (0 = start). */
-  resumeOffsetFor(file: { id: number; name: string; size: number; relativePath?: string }): Promise<number>;
-  open(file: { id: number; name: string; size: number; mime?: string; relativePath?: string }): Promise<FileSink>;
+  resumeOffsetFor(file: SinkFileMeta): Promise<number>;
+  open(file: SinkFileMeta): Promise<FileSink>;
 }
 
 export interface ProgressEvent {

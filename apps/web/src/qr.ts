@@ -236,7 +236,11 @@ function drawFunctionPatterns(
     reserve(r, 8, size - 1 - i);
     reserve(r, size - 1 - i, 8);
   }
-  setMod(m, r, size - 8, 8, true); // dark module
+  // Dark module: x = 8, y = size - 8.
+  setMod(m, r, 8, size - 8, true);
+
+  // Version information (v7+) must be reserved before data is placed.
+  drawVersionInfo(m, r, version, size);
 }
 
 function drawFinder(m: boolean[][], r: boolean[][], x: number, y: number): void {
@@ -342,15 +346,36 @@ function drawFormatBits(m: boolean[][], mask: number, size: number): void {
   for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
   const bits = ((data << 10) | rem) ^ 0x5412;
 
-  for (let i = 0; i <= 5; i++) m[8]![i] = ((bits >>> i) & 1) === 1;
-  m[8]![7] = ((bits >>> 6) & 1) === 1;
-  m[8]![8] = ((bits >>> 7) & 1) === 1;
-  m[7]![8] = ((bits >>> 8) & 1) === 1;
-  for (let i = 9; i < 15; i++) m[14 - i]![8] = ((bits >>> i) & 1) === 1;
+  // The matrix is indexed m[y][x]. Positions follow ISO/IEC 18004 §7.9.1
+  // (same layout as Nayuki's reference: setModule(x, y)).
+  const bit = (i: number) => ((bits >>> i) & 1) === 1;
 
-  for (let i = 0; i < 8; i++) m[size - 1 - i]![8] = ((bits >>> i) & 1) === 1;
-  for (let i = 8; i < 15; i++) m[8]![size - 15 + i] = ((bits >>> i) & 1) === 1;
-  m[size - 8]![8] = true;
+  // First copy, around the top-left finder.
+  for (let i = 0; i <= 5; i++) m[i]![8] = bit(i); // x = 8, y = 0..5
+  m[7]![8] = bit(6); //                              x = 8, y = 7
+  m[8]![8] = bit(7); //                              x = 8, y = 8
+  m[8]![7] = bit(8); //                              x = 7, y = 8
+  for (let i = 9; i < 15; i++) m[8]![14 - i] = bit(i); // x = 5..0, y = 8
+
+  // Second copy, split between the top-right and bottom-left finders.
+  for (let i = 0; i < 8; i++) m[8]![size - 1 - i] = bit(i); // y = 8, x = size-1..size-8
+  for (let i = 8; i < 15; i++) m[size - 15 + i]![8] = bit(i); // x = 8, y = size-7..size-1
+  m[size - 8]![8] = true; // dark module
+}
+
+/** Versions 7+ carry an 18-bit BCH(18,6) version block in two places (§7.10). */
+function drawVersionInfo(m: boolean[][], r: boolean[][], version: number, size: number): void {
+  if (version < 7) return;
+  let rem = version;
+  for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1f25);
+  const bits = (version << 12) | rem;
+  for (let i = 0; i < 18; i++) {
+    const on = ((bits >>> i) & 1) === 1;
+    const a = size - 11 + (i % 3);
+    const b = Math.floor(i / 3);
+    setMod(m, r, a, b, on); // x = a, y = b (top-right block)
+    setMod(m, r, b, a, on); // x = b, y = a (bottom-left block)
+  }
 }
 
 /* ─── Mask penalty scoring (ISO/IEC 18004 §8.8.2) ─── */
@@ -428,7 +453,8 @@ export interface QrSvgOptions {
 }
 
 export function qrToSvg(matrix: QrMatrix, opts: QrSvgOptions = {}): string {
-  const margin = opts.margin ?? 2;
+  // ISO/IEC 18004 requires a 4-module light quiet zone around the symbol.
+  const margin = opts.margin ?? 4;
   const total = matrix.size + margin * 2;
   const fg = opts.fg ?? "#0a0b10";
   const bg = opts.bg ?? "#ffffff";

@@ -28,6 +28,35 @@ export const DEFAULT_BUFFER_LOW_WATER = 1 * 1024 * 1024;
 /** Number of parallel data lanes (datachannels) per session. */
 export const DEFAULT_PARALLEL_LANES = 4;
 
+/** AES-GCM IV (12) + tag (16) added to each encrypted payload. */
+export const ENCRYPTION_OVERHEAD = 28;
+
+/**
+ * Largest plaintext chunk a peer may announce: header + payload + encryption
+ * overhead must still fit one 64 KiB DataChannel message.
+ */
+export const MAX_CHUNK_SIZE = 64 * 1024 - 16 - ENCRYPTION_OVERHEAD;
+
+/**
+ * Flow control (ADR-001). The receiver lets the sender have at most this many
+ * encoded frame bytes in flight (sent but not yet written to disk), so its
+ * memory stays bounded however fast the network or slow the disk.
+ */
+export const DEFAULT_FLOW_WINDOW = 16 * 1024 * 1024;
+/** The receiver reports progress (a `credit`) at least every this many bytes. */
+export const CREDIT_STEP = 1024 * 1024;
+/**
+ * Smallest window a receiver may advertise. Liveness needs
+ * window − one max frame ≥ the credit step (window / 4), i.e. ≥ ~87 KiB.
+ */
+export const MIN_FLOW_WINDOW = 256 * 1024;
+
+/** Manifest limits enforced by the receiver before it touches the disk. */
+export const MAX_FILES_PER_TRANSFER = 10_000;
+export const MAX_FILE_NAME_LENGTH = 1024;
+export const MAX_RELATIVE_PATH_LENGTH = 4096;
+export const MAX_LANES = 16;
+
 // ─── control channel messages ─────────────────────────────────────────────
 
 export interface FileEntry {
@@ -41,10 +70,17 @@ export interface FileEntry {
   sha256?: string;
   /** Relative path under the "transfer root" for folder uploads. */
   relativePath?: string;
+  /**
+   * Source file's last-modified time (ms since epoch). Part of the partial
+   * file's identity so a re-send resumes but a different file never does.
+   */
+  lastModified?: number;
 }
 
 export interface Manifest {
   type: "manifest";
+  /** Wire protocol version (PROTOCOL_VERSION). Absent = v1. */
+  protocol?: number;
   transferId: string;
   files: FileEntry[];
   totalBytes: number;
@@ -59,9 +95,24 @@ export interface ManifestAck {
   type: "manifest-ack";
   transferId: string;
   accept: boolean;
-  /** For resume: per-fileId, the next chunk index the receiver wants. */
+  /**
+   * For resume: per-fileId, the number of leading bytes the receiver already
+   * has. The sender restarts at the chunk containing that byte offset.
+   */
   resumeFrom?: Record<number, number>;
+  /** Flow-control window in encoded frame bytes (ADR-001). Required in v2. */
+  window?: number;
   reason?: string;
+}
+
+/**
+ * Receiver → sender flow control (ADR-001): cumulative encoded frame bytes
+ * the receiver has finished processing (written, or deliberately skipped).
+ */
+export interface CreditMsg {
+  type: "credit";
+  transferId: string;
+  consumed: number;
 }
 
 export interface FileStart {
@@ -134,6 +185,7 @@ export type ControlMsg =
   | TransferComplete
   | TransferCompleteAck
   | TransferAbort
+  | CreditMsg
   | PauseMsg
   | ResumeMsg
   | ChatMsg;

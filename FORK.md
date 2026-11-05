@@ -24,6 +24,9 @@
 - **Keep messages ≤ 64 KiB** (frame header and encryption overhead included).
 - Add an engine test in `packages/transfer/test/` for protocol changes. The
   in-memory pair can simulate lane latency (`dataLaneLatencyMs`).
+- **Validate everything from the network** in `packages/protocol/src/validate.ts`, and add an
+  adversarial test in `packages/transfer/test/hardening.test.ts` for any new message.
+- Bump `PROTOCOL_VERSION` for any wire change. Write an ADR in `docs/adr/` for design decisions.
 - TypeScript strict mode. No new runtime dependencies without a good reason.
 
 ## Self-hosting

@@ -38,12 +38,23 @@ export function randomSaltB64(): string {
   return bytesToBase64(buf);
 }
 
+/**
+ * Associated data binding a chunk to its exact position (protocol v2). A chunk
+ * moved to another file, index or transfer fails authentication instead of
+ * being written in the wrong place.
+ */
+export function chunkAad(transferId: string, fileId: number, chunkIndex: number): Uint8Array {
+  return new TextEncoder().encode(`dropbeam/v2|${transferId}|${fileId}|${chunkIndex}`);
+}
+
 /** Encrypt one chunk; returns IV(12) || ciphertext+tag. */
-export async function encryptChunk(key: CryptoKey, plaintext: Uint8Array): Promise<Uint8Array> {
+export async function encryptChunk(key: CryptoKey, plaintext: Uint8Array, aad?: Uint8Array): Promise<Uint8Array> {
   const iv = new Uint8Array(12);
   crypto.getRandomValues(iv);
+  const params: AesGcmParams = { name: "AES-GCM", iv: iv as unknown as BufferSource };
+  if (aad) params.additionalData = aad as unknown as BufferSource;
   const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, plaintext as unknown as BufferSource),
+    await crypto.subtle.encrypt(params, key, plaintext as unknown as BufferSource),
   );
   const out = new Uint8Array(iv.length + ct.length);
   out.set(iv, 0);
@@ -51,11 +62,13 @@ export async function encryptChunk(key: CryptoKey, plaintext: Uint8Array): Promi
   return out;
 }
 
-export async function decryptChunk(key: CryptoKey, framed: Uint8Array): Promise<Uint8Array> {
-  if (framed.byteLength < 12) throw new Error("encrypted chunk too short");
+export async function decryptChunk(key: CryptoKey, framed: Uint8Array, aad?: Uint8Array): Promise<Uint8Array> {
+  if (framed.byteLength < 28) throw new Error("encrypted chunk too short");
   const iv = framed.subarray(0, 12);
   const ct = framed.subarray(12);
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv as unknown as BufferSource }, key, ct as unknown as BufferSource);
+  const params: AesGcmParams = { name: "AES-GCM", iv: iv as unknown as BufferSource };
+  if (aad) params.additionalData = aad as unknown as BufferSource;
+  const pt = await crypto.subtle.decrypt(params, key, ct as unknown as BufferSource);
   return new Uint8Array(pt);
 }
 

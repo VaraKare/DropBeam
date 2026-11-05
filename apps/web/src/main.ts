@@ -430,7 +430,7 @@ shareNativeBtn.addEventListener("click", async () => {
 function flashCopy(btn: HTMLButtonElement): void {
   const original = btn.innerHTML;
   btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m5 12 5 5L20 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Copied';
-  if ("vibrate" in navigator) navigator.vibrate?.(15);
+  buzz(15);
   setTimeout(() => { btn.innerHTML = original; }, 1200);
 }
 
@@ -820,6 +820,18 @@ function friendlyError(err: unknown): string {
       ? "A file arrived corrupted on the other device and was deleted. Try sending again."
       : raw.replace(/^.*integrity-check-failed: /, "Integrity check failed: ") + ". Try again.";
   }
+  if (/version-mismatch/.test(raw)) {
+    return "The two devices are running different versions of DropBeam. Reload the page on both devices and try again.";
+  }
+  if (/receiver-stalled/.test(raw)) {
+    return "The other device stopped saving data (it may be asleep or out of storage). Keep its screen on and send again \u2014 it will pick up where it stopped.";
+  }
+  if (/receiver-no-response/.test(raw)) return "The other device didn't answer. Make sure DropBeam is still open there, then try again.";
+  if (/protocol-error|bad-manifest/.test(raw)) {
+    return "The other device sent data DropBeam couldn't accept, so the transfer was stopped and nothing unsafe was saved. Reload both pages and try again.";
+  }
+  if (/already-in-room/.test(raw)) return "This page is already in a transfer. Reload the page and try again.";
+  if (/server-full/.test(raw)) return "DropBeam is very busy right now. Please try again in a minute.";
   if (/receiver aborted|receiver-cancel/.test(raw)) return "The receiver cancelled the transfer.";
   return raw || "Something went wrong. Please try again.";
 }
@@ -1397,7 +1409,7 @@ function onTransferDone(subtitle: string): void {
   setDoneState("ok", "Transfer complete", subtitle);
   goto("done");
   burstConfetti();
-  if ("vibrate" in navigator) navigator.vibrate?.([30, 80, 30]);
+  buzz([30, 80, 30]);
 }
 
 function onTransferFailed(message: string): void {
@@ -1742,7 +1754,13 @@ function applyRouteMeta(path: string): void {
   if (canon) canon.setAttribute("href", path);
 }
 
-(function routeOnLoad(): void {
+/**
+ * Route the initial URL to a stage. Called once from `bootstrap()` at the very
+ * end of this module: the legal/blog content constants are declared further
+ * down, and touching them earlier threw a TDZ ReferenceError on direct loads
+ * of /about, /features, /blog, /privacy and /terms (audit #6).
+ */
+function routeOnLoad(): void {
   const path = location.pathname;
   const meta = ROUTES[path];
   applyRouteMeta(path);
@@ -1760,7 +1778,7 @@ function applyRouteMeta(path: string): void {
   // Otherwise route to the right in-app stage based on pathname.
   if (meta?.stage === "blog") showBlog();
   else if (meta?.stage === "legal" && meta.legal) showLegal(meta.legal);
-})();
+}
 
 
 /* ─────────────── memorable moments ─────────────── */
@@ -1886,6 +1904,13 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
 }
 
 /* ─────────────── tiny helpers ─────────────── */
+
+/** Haptic tick, only after the user has interacted (Chrome logs an error otherwise). */
+function buzz(pattern: number | number[]): void {
+  const ua = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+  if (ua && !ua.hasBeenActive) return;
+  if ("vibrate" in navigator) navigator.vibrate?.(pattern);
+}
 
 function humanBytes(n: number): string {
   if (!isFinite(n) || n < 0) return "—";
@@ -2141,3 +2166,8 @@ window.addEventListener("beforeunload", (e) => {
   return undefined;
 });
 
+/* ─────────────── bootstrap ─────────────── */
+
+// Must stay the last statement in this module: everything above (including
+// the content constants routing depends on) is initialized by now.
+routeOnLoad();

@@ -1,23 +1,29 @@
 import { existsSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import {
-  isClientMsg,
+  parseClientMsg,
   type ClientToServerMsg,
   type ServerToClientMsg,
 } from "@dropbeam/protocol";
+import { clientIp, loadConfig } from "./config.js";
 import { RateLimiter } from "./rateLimit.js";
 import { RoomManager, type PeerSlot, type Room } from "./room.js";
 
 interface SocketData {
   remoteAddr: string;
-  /** Set after the socket joins/creates a room. */
+  /** Set after the socket joins/creates a room. One membership per socket. */
   room?: Room;
   peer?: PeerSlot;
 }
 
-const PORT = Number(process.env.PORT ?? 8787);
-const HOST = process.env.HOST ?? "0.0.0.0";
-const MAX_MESSAGE_BYTES = Number(process.env.MAX_MSG_BYTES ?? 64 * 1024);
+const config = loadConfig();
+const PORT = config.port;
+const HOST = config.host;
+const MAX_MESSAGE_BYTES = config.maxMessageBytes;
+
+/** Open sockets, globally and per client address (ADR-003). */
+let openConnections = 0;
+const connectionsByIp = new Map<string, number>();
 
 /**
  * Optional: serve a static directory for unknown paths. Set
@@ -26,9 +32,7 @@ const MAX_MESSAGE_BYTES = Number(process.env.MAX_MSG_BYTES ?? 64 * 1024);
  * process host the web UI on the same port as signaling — handy for the
  * no-internet LAN flow (one URL, one process).
  */
-const WEB_ROOT = process.env.WEB_ROOT
-  ? resolve(process.cwd(), process.env.WEB_ROOT)
-  : null;
+const WEB_ROOT = config.webRoot ? resolve(process.cwd(), config.webRoot) : null;
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -78,8 +82,8 @@ async function serveStatic(root: string, urlPath: string): Promise<Response | nu
 const rooms = new RoomManager({
   defaultTtlMs: 30 * 60 * 1000, // 30 min
   maxTtlMs: 4 * 60 * 60 * 1000, // 4 h
-  maxRooms: Number(process.env.MAX_ROOMS ?? 10_000),
-  defaultCapacity: Number(process.env.ROOM_CAPACITY ?? 8),
+  maxRooms: config.maxRooms,
+  defaultCapacity: config.roomCapacity,
 });
 
 // Per-IP message-rate limiter: 30 msg/s burst, refill 15/s.
@@ -111,11 +115,33 @@ const server = Bun.serve<SocketData>({
         { headers: { "content-type": "application/json" } },
       );
     }
+    if (url.pathname === "/whoami") {
+      // Deploy check for TRUST_PROXY_HOPS (ADR-003): shows callers only their
+      // own address as the rate limiter sees it. A spoofed X-Forwarded-For
+      // must not change it. Not logged, not stored.
+      const ip = clientIp(srv.requestIP(req)?.address, req.headers.get("x-forwarded-for"), config.trustProxyHops);
+      return new Response(JSON.stringify({ ip, trustProxyHops: config.trustProxyHops }), {
+        headers: { "content-type": "application/json", "cache-control": "no-store" },
+      });
+    }
     if (url.pathname === "/ws") {
-      const remoteAddr =
-        req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-        srv.requestIP(req)?.address ??
-        "unknown";
+      if (config.allowedOrigins.length) {
+        const origin = req.headers.get("origin");
+        if (!origin || !config.allowedOrigins.includes(origin)) {
+          return new Response("origin not allowed", { status: 403 });
+        }
+      }
+      const remoteAddr = clientIp(
+        srv.requestIP(req)?.address,
+        req.headers.get("x-forwarded-for"),
+        config.trustProxyHops,
+      );
+      if (openConnections >= config.maxConnections) {
+        return new Response("server busy", { status: 503 });
+      }
+      if ((connectionsByIp.get(remoteAddr) ?? 0) >= config.maxConnectionsPerIp) {
+        return new Response("too many connections", { status: 429 });
+      }
       const ok = srv.upgrade(req, { data: { remoteAddr } satisfies SocketData });
       if (ok) return undefined;
       return new Response("upgrade failed", { status: 400 });
@@ -134,7 +160,9 @@ const server = Bun.serve<SocketData>({
   websocket: {
     maxPayloadLength: MAX_MESSAGE_BYTES,
     open(ws) {
-      // No-op; client must create or join a room next.
+      // Client must create or join a room next.
+      openConnections++;
+      connectionsByIp.set(ws.data.remoteAddr, (connectionsByIp.get(ws.data.remoteAddr) ?? 0) + 1);
     },
     message(ws, raw) {
       const ip = ws.data.remoteAddr;
@@ -157,26 +185,23 @@ const server = Bun.serve<SocketData>({
         });
         return;
       }
-      if (!isClientMsg(parsed)) {
+      const msg = parseClientMsg(parsed);
+      if (!msg) {
         jsonSend(ws, {
           type: "error",
           code: "invalid-message",
-          message: "Unknown message type.",
+          message: "Malformed or unknown message.",
         });
         return;
       }
-      handle(ws, parsed);
+      handle(ws, msg);
     },
     close(ws) {
-      const { room, peer } = ws.data;
-      if (room && peer) {
-        rooms.leave(room, peer.peerId);
-        broadcast(room, peer.peerId, {
-          type: "peer-left",
-          peerId: peer.peerId,
-          reason: "disconnect",
-        });
-      }
+      openConnections = Math.max(0, openConnections - 1);
+      const n = (connectionsByIp.get(ws.data.remoteAddr) ?? 1) - 1;
+      if (n > 0) connectionsByIp.set(ws.data.remoteAddr, n);
+      else connectionsByIp.delete(ws.data.remoteAddr);
+      leaveCurrentRoom(ws, "disconnect");
     },
   },
 });
@@ -199,6 +224,10 @@ function handle(ws: WS, msg: ClientToServerMsg): void {
       return;
 
     case "create-room": {
+      if (ws.data.room) {
+        jsonSend(ws, { type: "error", code: "already-in-room", message: "Leave the current room first." });
+        return;
+      }
       if (!createLimiter.consume(ws.data.remoteAddr)) {
         jsonSend(ws, {
           type: "error",
@@ -221,16 +250,21 @@ function handle(ws: WS, msg: ClientToServerMsg): void {
           expiresAt: room.expiresAt,
         });
       } catch (e) {
+        const m = (e as Error).message;
         jsonSend(ws, {
           type: "error",
-          code: "internal",
-          message: (e as Error).message,
+          code: m === "server-full" ? "server-full" : "internal",
+          message: m === "server-full" ? "The server is at capacity. Try again shortly." : "Could not create a room.",
         });
       }
       return;
     }
 
     case "join-room": {
+      if (ws.data.room) {
+        jsonSend(ws, { type: "error", code: "already-in-room", message: "Leave the current room first." });
+        return;
+      }
       try {
         const found = rooms.find(msg.roomIdOrCode);
         if (!found) {
@@ -303,21 +337,21 @@ function handle(ws: WS, msg: ClientToServerMsg): void {
       return;
     }
 
-    case "leave-room": {
-      const { room, peer } = ws.data;
-      if (room && peer) {
-        rooms.leave(room, peer.peerId);
-        broadcast(room, peer.peerId, {
-          type: "peer-left",
-          peerId: peer.peerId,
-          reason: "leave",
-        });
-        ws.data.room = undefined;
-        ws.data.peer = undefined;
-      }
+    case "leave-room":
+      leaveCurrentRoom(ws, "leave");
       return;
-    }
   }
+}
+
+/** Remove the socket from its room (if any) and tell the other peer. */
+function leaveCurrentRoom(ws: WS, reason: "leave" | "disconnect"): void {
+  const { room, peer } = ws.data;
+  ws.data.room = undefined;
+  ws.data.peer = undefined;
+  if (!room || !peer) return;
+  peer.send = null;
+  rooms.leave(room, peer.peerId);
+  broadcast(room, peer.peerId, { type: "peer-left", peerId: peer.peerId, reason });
 }
 
 function broadcast(room: Room, exceptPeerId: string, msg: ServerToClientMsg): void {

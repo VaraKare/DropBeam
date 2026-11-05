@@ -57,10 +57,12 @@ export function createWorkerSinkProxy(transport: SinkTransport): FileSinkFactory
     size: number;
     mime?: string;
     relativePath?: string;
+    lastModified?: number;
   }): SinkFileMeta {
     const m: SinkFileMeta = { id: f.id, name: f.name, size: f.size };
     if (f.mime !== undefined) m.mime = f.mime;
     if (f.relativePath !== undefined) m.relativePath = f.relativePath;
+    if (f.lastModified !== undefined) m.lastModified = f.lastModified;
     return m;
   }
 

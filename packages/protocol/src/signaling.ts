@@ -122,6 +122,8 @@ export interface ErrorMsg {
     | "invalid-message"
     | "not-in-room"
     | "peer-not-found"
+    | "already-in-room"
+    | "server-full"
     | "internal";
   message: string;
 }
@@ -135,16 +137,4 @@ export type ServerToClientMsg =
   | PongMsg
   | ErrorMsg;
 
-// ─── runtime guards ───────────────────────────────────────────────────────
-
-export function isClientMsg(v: unknown): v is ClientToServerMsg {
-  if (typeof v !== "object" || v === null) return false;
-  const t = (v as { type?: unknown }).type;
-  return (
-    t === "create-room" ||
-    t === "join-room" ||
-    t === "signal" ||
-    t === "leave-room" ||
-    t === "ping"
-  );
-}
+// Runtime guards live in ./validate.ts (parseClientMsg, isClientMsg).

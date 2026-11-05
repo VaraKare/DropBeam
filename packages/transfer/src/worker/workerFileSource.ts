@@ -25,6 +25,10 @@ export function createWorkerFileSource(input: WorkerFileInput): FileSource {
   if (input.mime !== undefined) base.mime = input.mime;
   if (input.relativePath !== undefined) base.relativePath = input.relativePath;
   if (input.sha256 !== undefined) base.sha256 = input.sha256;
+  // A File keeps its lastModified through structured clone; it is part of the
+  // receiver's partial-file identity (ADR-002).
+  const lm = (blob as { lastModified?: unknown }).lastModified;
+  if (typeof lm === "number" && Number.isSafeInteger(lm) && lm >= 0) base.lastModified = lm;
   return base;
 }
 
