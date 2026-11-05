@@ -104,8 +104,9 @@ bun run build           # production build of apps/web
 
 ## Deploy
 
-The web app goes on Vercel. The signaling server needs a host that keeps
-WebSockets open (Koyeb, Render, Fly). Step by step in **[DEPLOY.md](DEPLOY.md)**.
+The web app goes on Vercel. The signaling server runs free on **Cloudflare
+Workers** (`bun run deploy:cloudflare` in `apps/signaling`, ADR-007), or on
+any Docker host (Koyeb, Render). Step by step in **[DEPLOY.md](DEPLOY.md)**.
 
 | Variable | Where | Required |
 |---|---|---|

@@ -27,7 +27,7 @@ flowchart LR
     end
 
     CDN["Vercel CDN<br/>static app files"]
-    SIG["Signaling server<br/>Bun WebSocket · apps/signaling"]
+    SIG["Signaling server<br/>Cloudflare Worker + Durable Object<br/>(or Bun/Docker) · apps/signaling"]
     STUN["STUN (Google, Cloudflare)<br/>'what is my public address?'"]
     TURN["TURN relay (optional)<br/>only for strict networks"]
 
@@ -136,7 +136,11 @@ DropBeam/
 │   │   └── .env.example        VITE_SIGNALING_URL, VITE_TURN_*
 │   │
 │   └── signaling/              ★ THE MATCHMAKER
-│       ├── src/server.ts       HTTP + WebSocket, /healthz, rate limits, optional static hosting
+│       ├── src/hub.ts          Rooms, membership, limits, relay (shared by both servers)
+│       ├── src/worker.ts       Cloudflare Worker + Durable Object adapter (production)
+│       ├── src/server.ts       Bun adapter: HTTP + WebSocket, /healthz, /whoami, LAN static hosting
+│       ├── wrangler.jsonc      Cloudflare deploy config
+│       ├── scripts/smoke.ts    12-check smoke test for any deployed server
 │       ├── src/room.ts         Rooms: create/join/leave, 30-min TTL, capacity, pruning
 │       ├── src/codes.ts        Human-friendly codes (K7-9P3-MX2A), ids, tokens
 │       ├── src/rateLimit.ts    Token bucket per IP

@@ -4,8 +4,11 @@
  * with NaN limits (audit #9).
  */
 
-function intEnv(name: string, fallback: number, min: number, max: number): number {
-  const raw = process.env[name];
+/** Environment variables, from `process.env` (Bun) or Worker bindings (Cloudflare). */
+export type EnvSource = Record<string, string | undefined>;
+
+function intEnv(env: EnvSource, name: string, fallback: number, min: number, max: number): number {
+  const raw = env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
   if (!Number.isInteger(n) || n < min || n > max) {
@@ -14,8 +17,8 @@ function intEnv(name: string, fallback: number, min: number, max: number): numbe
   return n;
 }
 
-function listEnv(name: string): string[] {
-  return (process.env[name] ?? "")
+function listEnv(env: EnvSource, name: string): string[] {
+  return (env[name] ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
@@ -41,19 +44,25 @@ export interface SignalingConfig {
   webRoot: string | null;
 }
 
-export function loadConfig(): SignalingConfig {
+export function loadConfig(env: EnvSource): SignalingConfig {
   return {
-    port: intEnv("PORT", 8787, 0, 65_535),
-    host: process.env.HOST?.trim() || "0.0.0.0",
-    maxMessageBytes: intEnv("MAX_MSG_BYTES", 64 * 1024, 1024, 1024 * 1024),
-    maxRooms: intEnv("MAX_ROOMS", 10_000, 1, 1_000_000),
-    roomCapacity: intEnv("ROOM_CAPACITY", 2, 2, 16),
-    trustProxyHops: intEnv("TRUST_PROXY_HOPS", 0, 0, 5),
-    maxConnections: intEnv("MAX_CONNECTIONS", 20_000, 1, 1_000_000),
-    maxConnectionsPerIp: intEnv("MAX_CONNECTIONS_PER_IP", 64, 1, 100_000),
-    allowedOrigins: listEnv("ALLOWED_ORIGINS"),
-    webRoot: process.env.WEB_ROOT?.trim() || null,
+    port: intEnv(env, "PORT", 8787, 0, 65_535),
+    host: env.HOST?.trim() || "0.0.0.0",
+    maxMessageBytes: intEnv(env, "MAX_MSG_BYTES", 64 * 1024, 1024, 1024 * 1024),
+    maxRooms: intEnv(env, "MAX_ROOMS", 10_000, 1, 1_000_000),
+    roomCapacity: intEnv(env, "ROOM_CAPACITY", 2, 2, 16),
+    trustProxyHops: intEnv(env, "TRUST_PROXY_HOPS", 0, 0, 5),
+    maxConnections: intEnv(env, "MAX_CONNECTIONS", 20_000, 1, 1_000_000),
+    maxConnectionsPerIp: intEnv(env, "MAX_CONNECTIONS_PER_IP", 64, 1, 100_000),
+    allowedOrigins: listEnv(env, "ALLOWED_ORIGINS"),
+    webRoot: env.WEB_ROOT?.trim() || null,
   };
+}
+
+/** True if the browser Origin is allowed (empty allow-list = allow any). */
+export function originAllowed(allowed: string[], origin: string | null): boolean {
+  if (!allowed.length) return true;
+  return !!origin && allowed.includes(origin);
 }
 
 /**

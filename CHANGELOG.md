@@ -4,7 +4,21 @@ All notable changes. Dates are UTC. The wire protocol version is in
 `packages/protocol/src/index.ts`; peers on different versions refuse each
 other with a clear "reload both pages" message.
 
-## Unreleased: Phase A hardening (2026-11-05)
+## Unreleased: signaling on Cloudflare (2026-11-05)
+
+- The signaling server runs on Cloudflare Workers with one Durable Object
+  (ADR-007): always on, free plan, client IP from `CF-Connecting-IP`.
+  Deploy with `bun run deploy:cloudflare` in `apps/signaling`.
+- Room logic moved into a shared `Hub` (`apps/signaling/src/hub.ts`), used
+  by both the Bun server and the Worker.
+- `apps/signaling/scripts/smoke.ts`: a 12-check smoke test for any
+  deployed signaling server.
+- Room codes and ids use Web Crypto (no Node APIs).
+- CI bundles the Worker (`wrangler deploy --dry-run`) on Node 22.
+- `undici` pinned to 7.30.1 via `overrides` (wrangler's 7.29.1 had
+  advisories).
+
+## Phase A hardening (2026-11-05)
 
 From the [external audit](docs/audit/2026-11-05-external-audit.md). See the
 [response](docs/audit/2026-11-05-response.md) and

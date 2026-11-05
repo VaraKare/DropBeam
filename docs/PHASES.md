@@ -99,10 +99,10 @@ connection caps, a `/whoami` deploy check for proxy trust.
 
 ## Phase D: public launch ☐
 
-**Costs:** domain ~$12/yr, Render Starter ~$7/mo.
+**Costs:** domain ~$12/yr. Signaling moved to Cloudflare's free plan (ADR-007), so no hosting cost until its daily limits are reached.
 
 - Domain + DNS; staging (`staging.` on free tiers) and production.
-- Signaling on an always-on instance near users ([ADR-006](adr/ADR-006-hosting-and-turn.md)).
+- ~~Signaling on an always-on instance~~ ✔ Done early on Cloudflare ([ADR-007](adr/ADR-007-signaling-on-cloudflare.md)).
 - `/turn-credentials` minting (Cloudflare TURN, short TTL, per-room cap),
   plus a spending alert (#13).
 - `/metrics`: aggregate counters only (rooms, joins, setup failures, path
@@ -144,3 +144,6 @@ a short design note in `docs/adr/` before code.
 
 - 2026-11-05: created from the external audit; Phase A started.
 - 2026-11-05: Phase A completed on branch `hardening/phase-a`.
+- 2026-11-05: signaling moved to Cloudflare Workers (ADR-007), replacing Northflank.
+- 2026-11-05: Worker deployed (`dropbeam-signaling.dropbeam-signaling.workers.dev`), smoke test 12/12,
+  Vercel `VITE_SIGNALING_URL` switched and production redeployed; live transfer verified.

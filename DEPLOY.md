@@ -18,10 +18,41 @@ signaling first**, then point the web app at it.
 
 ## Step 1 — Deploy the signaling server
 
-The repo ships `apps/signaling/Dockerfile` (build context = repo root) and a
-`render.yaml` blueprint. Any Docker host works.
+**Recommended: Cloudflare (free, always on).** See ADR-007. Docker hosts
+(Koyeb, Render) also work and are kept below for self-hosting.
 
-### Option A — Koyeb (free, doesn't sleep)
+### Option A — Cloudflare Workers (recommended)
+
+Needs a free Cloudflare account and Node.js 22+ (wrangler requires it).
+
+```bash
+cd apps/signaling
+bunx wrangler login                 # opens your browser once to sign in to Cloudflare
+bun run deploy:cloudflare           # = wrangler deploy
+# → https://dropbeam-signaling.<your-subdomain>.workers.dev
+```
+
+- WebSocket URL for Vercel: `wss://dropbeam-signaling.<your-subdomain>.workers.dev/ws`
+- **Live (production):** `https://dropbeam-signaling.dropbeam-signaling.workers.dev`
+  (Vercel `VITE_SIGNALING_URL` = `wss://dropbeam-signaling.dropbeam-signaling.workers.dev/ws`,
+  Production + Preview). Deployed 2026-11-05; smoke test 12/12; live two-tab
+  transfer byte-exact.
+- Settings live in `apps/signaling/wrangler.jsonc` under `vars` (same names
+  as the table below). No `TRUST_PROXY_HOPS` is needed: Cloudflare's
+  `CF-Connecting-IP` can't be spoofed.
+- Verify: `bun apps/signaling/scripts/smoke.ts https://dropbeam-signaling.<your-subdomain>.workers.dev`
+  runs 12 checks (create/join/relay/limits/cleanup).
+- Free plan: 100k requests/day and 13k GB-s/day. Usage is under Workers &
+  Pages → `dropbeam-signaling` → Metrics.
+- No Node 22 on your Mac? Download the official Node 22 tarball from
+  nodejs.org, unpack it anywhere, and run
+  `PATH=<unpacked>/bin:$PATH node node_modules/wrangler/bin/wrangler.js deploy`
+  from `apps/signaling`. Nothing gets installed system-wide.
+
+The repo also ships `apps/signaling/Dockerfile` (build context = repo root)
+and a `render.yaml` blueprint for Docker hosts.
+
+### Option B — Koyeb (Docker)
 
 1. <https://app.koyeb.com> → **Create Service** → **GitHub** → this repo, branch `main`.
 2. Builder **Dockerfile**, location `apps/signaling/Dockerfile`, build context `.` (repo root).
@@ -29,7 +60,7 @@ The repo ships `apps/signaling/Dockerfile` (build context = repo root) and a
 4. Free plan, Nano instance → **Deploy** (~4 min).
 5. WebSocket URL: `wss://<service>.koyeb.app/ws`.
 
-### Option B — Render (free, sleeps after 15 min idle)
+### Option C — Render (free, sleeps after 15 min idle)
 
 1. <https://dashboard.render.com> → **New → Blueprint** → pick this repo → **Apply**.
 2. WebSocket URL: `wss://<service>.onrender.com/ws`.
@@ -61,7 +92,9 @@ curl -H "X-Forwarded-For: 1.2.3.4" https://<your-signaling-host>/whoami
 
 If the first command shows an internal address (10.x, 172.16–31.x,
 100.64.x), raise `TRUST_PROXY_HOPS` by one. If the second shows `1.2.3.4`,
-lower it.
+lower it. Northflank was found to need `1` as well (its proxy showed every
+visitor as `10.60.x.x` with `0`). On Cloudflare (Option A) none of this
+applies.
 
 ### Signaling settings
 
