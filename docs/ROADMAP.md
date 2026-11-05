@@ -1,5 +1,9 @@
 # DropBeam: roadmap
 
+> **Execution order lives in [PHASES.md](PHASES.md).** This file is the
+> backlog. The 2026-11-05 audit and its response are in [audit/](audit/), and
+> design decisions are in [adr/](adr/).
+
 Four lists: what to **do** before and after launch, what to **test**, what
 **features** to add, and how the system **scales** (many users, caching,
 Docker, storage). Each item has a priority:
@@ -23,11 +27,11 @@ Docker, storage). Each item has a priority:
 - [ ] **Buy the domain** and point it at Vercel. Give signaling its own
       sub-domain, e.g. `ws.dropbeam.com` → Render. Then rebuild with
       `VITE_SIGNALING_URL=wss://ws.dropbeam.com/ws`.
-- [ ] **Fix IP detection behind proxies.** `server.ts` trusts the *first*
+- [x] *(Done in Phase A: `TRUST_PROXY_HOPS`, ADR-003.)* **Fix IP detection behind proxies.** `server.ts` trusts the *first*
       `X-Forwarded-For` value, which a client can fake to dodge the rate
       limits. Use the value the platform's proxy appends instead (the
       right-most entry, or Render's documented header).
-- [ ] **Loosen per-IP limits for shared networks.** A college, office or
+- [ ] *(Phase B: per-socket message limits.)* **Loosen per-IP limits for shared networks.** A college, office or
       mobile carrier (CGNAT) can put hundreds of people behind one IP, and
       "5 rooms, then 1 per 10 s" will block them. Key the limiter on IP +
       device id, or raise the burst and watch `/healthz`.
@@ -45,7 +49,7 @@ Docker, storage). Each item has a priority:
   - `index.html` points `og:image` at `/og.png`, but only `og.svg` exists.
     Add a 1200×630 PNG; WhatsApp, X and LinkedIn don't show SVG previews.
   - `<link rel="canonical" href="/">` should be the full URL.
-- [ ] **CI:** a GitHub Actions workflow running `bun test`,
+- [x] *(Done in Phase A: `.github/workflows/ci.yml`.)* **CI:** a GitHub Actions workflow running `bun test`,
       `bun run typecheck` and `bun run build` on every PR.
 
 ### P1: first months

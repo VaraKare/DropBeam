@@ -30,6 +30,10 @@ services:
       # PORT is injected automatically by Render — the signaling server
       # already reads process.env.PORT, so nothing to set.
       - key: ROOM_CAPACITY
-        value: "8"
+        value: "2"            # one sender + one receiver (audit #12)
       - key: MAX_ROOMS
         value: "10000"
+      # Render's proxy appends the client address to X-Forwarded-For; trust
+      # exactly that one hop (ADR-003). Verify after deploy: see DEPLOY.md.
+      - key: TRUST_PROXY_HOPS
+        value: "1"

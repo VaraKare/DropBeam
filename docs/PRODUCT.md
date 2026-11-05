@@ -84,6 +84,12 @@ nothing stored in the cloud."*
 
 ---
 
+> **Note (audit 2026-11-05):** the cost, TURN-share, revenue and growth
+> numbers below are **planning hypotheses**, not measurements. Phase D adds
+> aggregate metrics (setup failures, path type, relayed bytes), and these
+> tables get replaced with measured values. See [PHASES.md](PHASES.md) and
+> [ADR-006](adr/ADR-006-hosting-and-turn.md).
+
 ## 4. What it costs to run
 
 The architecture is cheap on purpose. **File bytes don't touch our

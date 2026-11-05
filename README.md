@@ -48,6 +48,10 @@ with an optional passphrase for an extra AES-GCM-256 layer.
 | [docs/MAP.md](docs/MAP.md) | Project map: system diagram, transfer sequence, screens, every folder explained, where data lives |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | To-dos, manual + automated test plan, features to add, scaling to many users, Docker, caching, storage |
 | [docs/PRODUCT.md](docs/PRODUCT.md) | Who it's for, comparison with AirDrop / WeTransfer / Snapdrop and others, running costs, ads and other income, growth estimate |
+| [docs/PHASES.md](docs/PHASES.md) | **What's being built now**, phase by phase, with exit criteria |
+| [docs/audit/](docs/audit/) | External audit (2026-11-05), our finding-by-finding response, verification records |
+| [docs/adr/](docs/adr/) | Architecture decisions: flow control, partial files, proxies, ads isolation, scaling, hosting |
+| [CHANGELOG.md](CHANGELOG.md) | What changed, release by release |
 | [SETUP.md](SETUP.md) · [DEPLOY.md](DEPLOY.md) · [FORK.md](FORK.md) · [FEATURES.md](FEATURES.md) | Run locally · go live · contribute · feature list |
 
 ## Repo layout
@@ -107,7 +111,8 @@ WebSockets open (Koyeb, Render, Fly). Step by step in **[DEPLOY.md](DEPLOY.md)**
 |---|---|---|
 | `VITE_SIGNALING_URL` | Vercel (build time) | yes, e.g. `wss://your-signaling.example.com/ws` |
 | `VITE_TURN_URLS`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` | Vercel (build time) | optional, for strict networks |
-| `PORT`, `HOST`, `ROOM_CAPACITY`, `MAX_ROOMS`, `WEB_ROOT` | signaling host | optional |
+| `TRUST_PROXY_HOPS` | signaling host | `1` behind Render/Koyeb (set in `render.yaml`); verify with `/whoami` |
+| `PORT`, `HOST`, `ROOM_CAPACITY`, `MAX_ROOMS`, `MAX_CONNECTIONS(_PER_IP)`, `ALLOWED_ORIGINS`, `WEB_ROOT` | signaling host | optional, see DEPLOY.md |
 
 ## How a transfer works
 
@@ -118,7 +123,10 @@ WebSockets open (Koyeb, Render, Fly). Step by step in **[DEPLOY.md](DEPLOY.md)**
    A manifest (names, sizes, optional encryption salt) goes first. The receiver
    checks free space and asks to resume any partial files.
 4. Chunks go out with a 16-byte header: magic, version, flags, file id and
-   chunk index. Each lane respects backpressure.
+   chunk index. Each lane respects backpressure. The receiver also grants
+   **byte credits** (a 16 MiB window), so a slow disk can never make the page
+   hold more than that in memory. Every manifest, control message and frame is
+   validated: out-of-range, duplicate or mis-sized chunks stop the transfer.
 5. Because the lanes aren't ordered relative to each other, the receiver
    finishes a file only once **every byte** has arrived. It then re-reads the
    file, verifies the SHA-256 and sends `complete-ack`. The sender reports

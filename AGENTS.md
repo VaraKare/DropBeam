@@ -55,13 +55,21 @@ See DEPLOY.md.
 ## Invariants — don't break these
 
 - Separate DataChannels are **not ordered relative to each other**: never act on a control message
-  (file-end / complete) as if all data has arrived. The receiver counts bytes; the sender waits for `complete-ack`.
+  (file-end / complete) as if all data has arrived. The receiver tracks every chunk; the sender waits for `complete-ack`.
 - Frame = 16-byte header + payload (+28 B when encrypted) must fit **64 KiB** → `DEFAULT_CHUNK_SIZE = 64 KiB − 64`.
 - Never buffer whole files in memory (no `arrayBuffer()` on user files, no whole-file digests).
 - Never overwrite or splice user files: write `.dbpart`, verify, then rename to a free name.
 - Secure-context-only APIs (`crypto.randomUUID`, `crypto.subtle`, OPFS, folder picker) are missing on
   plain `http://<lan-ip>`; degrade with a clear message instead of crashing.
 - The worker's `bufferedAmount` is a cached copy; the main thread must report state when thresholds change.
+- **Never trust the peer.** Everything from the network goes through `packages/protocol/src/validate.ts`
+  (`parseControlMsg`, `validateManifest`, `parseClientMsg`); frames are range-, length- and duplicate-checked.
+- **Receiver memory is bounded by flow control** (ADR-001): the sender may have at most the receiver's
+  advertised window in flight; don't add a code path that sends frames without `waitForCredit`.
+- Protocol changes bump `PROTOCOL_VERSION`; peers on different versions refuse each other with `version-mismatch`.
+- Partial files are `<name>.<fingerprint>.dbpart` (ADR-002); a sender file name is always a single leaf.
+- Signaling: one room per socket, rooms of 2, client IP via `TRUST_PROXY_HOPS` only (ADR-003).
+- Plans and decisions: `docs/PHASES.md`, `docs/adr/`, `docs/audit/`. Update PHASES.md with the work.
 
 ## Status
 

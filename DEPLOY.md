@@ -44,6 +44,40 @@ curl https://<your-signaling-host>/healthz
 # → {"ok":true,"rooms":0,...}
 ```
 
+### Check that rate limits can't be dodged (`TRUST_PROXY_HOPS`)
+
+Your host's proxy adds the visitor's address to `X-Forwarded-For`. The
+server must trust exactly that many hops: `1` on Render and Koyeb (already
+set in `render.yaml`), `0` when nothing sits in front of it (the default).
+See `docs/adr/ADR-003-client-ip-and-proxies.md`.
+
+```bash
+curl https://<your-signaling-host>/whoami
+# → {"ip":"<your public IP>","trustProxyHops":1}
+
+curl -H "X-Forwarded-For: 1.2.3.4" https://<your-signaling-host>/whoami
+# → must STILL show your public IP, never 1.2.3.4
+```
+
+If the first command shows an internal address (10.x, 172.16–31.x,
+100.64.x), raise `TRUST_PROXY_HOPS` by one. If the second shows `1.2.3.4`,
+lower it.
+
+### Signaling settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT`, `HOST` | `8787`, `0.0.0.0` | Where to listen |
+| `TRUST_PROXY_HOPS` | `0` | Reverse proxies in front (see above) |
+| `ROOM_CAPACITY` | `2` | Peers per room: one sender + one receiver |
+| `MAX_ROOMS` | `10000` | Rooms at once |
+| `MAX_CONNECTIONS` / `MAX_CONNECTIONS_PER_IP` | `20000` / `64` | Socket caps (whole server / per address) |
+| `ALLOWED_ORIGINS` | *(any)* | Comma-separated site origins allowed to connect, e.g. `https://dropbeam.com` |
+| `MAX_MSG_BYTES` | `65536` | Largest signaling message |
+| `WEB_ROOT` | – | Also serve the built web app (LAN mode) |
+
+Invalid values stop the server at startup with a clear message.
+
 ---
 
 ## Step 2 — Deploy the web app to Vercel
@@ -92,8 +126,10 @@ Options: Metered.ca (free tier, needs an account), Cloudflare Realtime TURN,
 Twilio NTS, or self-hosted coturn. Put the URLs and credentials in the
 `VITE_TURN_*` variables above and redeploy.
 
-Note: TURN credentials in a static site are visible to anyone who opens
-DevTools. Use a provider that lets you cap usage, or short-lived credentials.
+**Don't do this for a public launch.** TURN credentials in a static site are
+visible to anyone who opens DevTools, and others can burn your relay
+bandwidth with them (audit #13). The plan (Phase D, ADR-006) is short-lived
+credentials minted by the signaling server. Until then, launch without TURN.
 
 ---
 

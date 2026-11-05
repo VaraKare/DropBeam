@@ -11,7 +11,7 @@
  *   2. Sink-plane    — FileSinkFactory request/response (worker calls, main answers).
  */
 
-import type { TransferEvent } from "../types.js";
+import type { SinkFileMeta, TransferEvent } from "../types.js";
 
 export type ChannelId = number;
 export type RequestId = number;
@@ -232,13 +232,8 @@ export type WorkerFileInput =
 
 export type SinkHandleId = number;
 
-export interface SinkFileMeta {
-  id: number;
-  name: string;
-  size: number;
-  mime?: string;
-  relativePath?: string;
-}
+/** Re-exported from ../types.ts so the worker and engine share one definition. */
+export type { SinkFileMeta } from "../types.js";
 
 /** `Error` doesn't structured-clone reliably across workers — flatten it. */
 export type SerializableTransferEvent =

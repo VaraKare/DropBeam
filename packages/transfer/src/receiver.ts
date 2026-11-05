@@ -1,10 +1,16 @@
 import {
+  CREDIT_STEP,
+  DEFAULT_FLOW_WINDOW,
+  MIN_FLOW_WINDOW,
+  PROTOCOL_VERSION,
   decodeFrame,
+  parseControlMsg,
+  validateManifest,
   type ControlMsg,
   type Manifest,
 } from "@dropbeam/protocol";
 import { sha256OfStream } from "./checksum.js";
-import { decryptChunk, deriveKey } from "./encryption.js";
+import { chunkAad, decryptChunk, deriveKey } from "./encryption.js";
 import { type DataChannel, type PeerConnection } from "./peer.js";
 import type {
   FileSink,
@@ -21,22 +27,43 @@ export interface ReceiverOptions {
   progressIntervalMs?: number;
   /** Auto-accept manifests; if false, you must call `accept()` yourself. */
   autoAccept?: boolean;
+  /**
+   * Flow-control window advertised to the sender (ADR-001): the most encoded
+   * frame bytes that may be queued here, unwritten, at any moment.
+   */
+  flowWindow?: number;
 }
 
 interface FileState {
   manifestEntry: Manifest["files"][number];
   sink: FileSink;
+  /** Leading bytes already on disk from an earlier session. */
   resumeOffset: number;
-  /** Running count of NEW bytes written during this session (excludes prefill). */
+  /** First chunk the sender will send (the one containing `resumeOffset`). */
+  startChunk: number;
+  /** Total chunks in the file (0 for an empty file). */
+  totalChunks: number;
+  /** One bit per chunk index ≥ startChunk; catches duplicates and gaps exactly. */
+  seen: Uint8Array;
+  chunksGot: number;
+  /** NEW bytes written during this session (excludes the resume prefix). */
   bytesReceived: number;
   /**
    * sha256 from the sender's `file-end`, once it has arrived. `file-end` comes
    * over the control channel and can overtake this file's last data frames
    * (which ride separate, independently-ordered lanes), so we only finish the
-   * file once *both* the end marker and every byte are in.
+   * file once *both* the end marker and every chunk are in.
    */
   pendingSha: string | null;
-  done: boolean;
+  /** Finalized: renamed to its final name and verified. */
+  finished: boolean;
+}
+
+/** A peer broke the protocol; the transfer stops with this reason. */
+class ProtocolError extends Error {
+  constructor(detail: string) {
+    super(`protocol-error: ${detail}`);
+  }
 }
 
 export class TransferReceiver {
@@ -44,6 +71,8 @@ export class TransferReceiver {
   private lanes: DataChannel[] = [];
   private files = new Map<number, FileState>();
   private currentManifest: Manifest | null = null;
+  /** A manifest has been received (even one we rejected); a second one is a protocol error. */
+  private sawManifest = false;
   private cryptoKey: CryptoKey | undefined;
   private startedAt = 0;
   private totalBytes = 0;
@@ -57,8 +86,19 @@ export class TransferReceiver {
   private completeResolve: (() => void) | null = null;
   private completeReject: ((e: Error) => void) | null = null;
 
-  /** Serialize async control-message handlers so file-end always lands before complete. */
-  private controlQueue: Promise<void> = Promise.resolve();
+  // Flow control (ADR-001).
+  private readonly window: number;
+  /** Credit at least every window/4 bytes (≤ CREDIT_STEP) so the sender can never deadlock. */
+  private readonly creditStep: number;
+  /** Encoded frame bytes fully processed (written or skipped). */
+  private consumed = 0;
+  private lastCredited = 0;
+  /** Encoded frame bytes received but not yet processed (held in memory). */
+  private queued = 0;
+  private peakQueued = 0;
+
+  /** Serialize async handlers so writes, file-end and complete never race. */
+  private queue: Promise<void> = Promise.resolve();
 
   private readonly emit: (e: TransferEvent) => void;
   private readonly progressMs: number;
@@ -71,6 +111,8 @@ export class TransferReceiver {
     this.emit = opts.onEvent ?? (() => {});
     this.progressMs = opts.progressIntervalMs ?? 250;
     this.autoAccept = opts.autoAccept ?? true;
+    this.window = Math.max(MIN_FLOW_WINDOW, opts.flowWindow ?? DEFAULT_FLOW_WINDOW);
+    this.creditStep = Math.min(CREDIT_STEP, Math.floor(this.window / 4));
   }
 
   /** Wire `pc.ondatachannel`. Call BEFORE setRemoteDescription on the offer. */
@@ -86,66 +128,76 @@ export class TransferReceiver {
     });
   }
 
+  /** Largest number of unprocessed frame bytes held in memory so far (diagnostics/tests). */
+  get peakQueuedBytes(): number {
+    return this.peakQueued;
+  }
+
   private adoptChannel(ch: DataChannel): void {
     ch.binaryType = "arraybuffer";
     if (ch.label === "control") {
       this.control = ch;
       ch.onmessage = (data) => {
-        if (typeof data === "string") this.enqueueControl(data);
+        if (typeof data === "string") this.enqueue(() => this.onControl(data));
       };
       ch.onclose = () => {
-        // Drain the serial queue first — the 'complete' control message may
-        // already be queued but not yet processed when the channel fires onclose.
-        this.controlQueue.then(() => {
+        // Drain the queue first — 'complete' may already be queued but not
+        // yet processed when the channel fires onclose.
+        void this.queue.then(() => {
           if (!this.allDone()) this.fail(new Error("control channel closed"));
         });
       };
     } else if (ch.label.startsWith("data-")) {
       this.lanes.push(ch);
       ch.onmessage = (data) => {
-        if (typeof data !== "string") {
-          // Datachannel can hand us either an ArrayBuffer or a Uint8Array
-          // depending on the runtime; normalize.
-          const bytes =
-            data instanceof ArrayBuffer
-              ? new Uint8Array(data)
-              : new Uint8Array(
-                  (data as ArrayBufferView).buffer,
-                  (data as ArrayBufferView).byteOffset,
-                  (data as ArrayBufferView).byteLength,
-                );
-          // Important: we enqueue onto the same serial queue so writes don't race
-          // with file-end / complete control messages.
-          this.enqueueData(bytes);
-        }
+        if (typeof data === "string") return;
+        // Datachannels hand us an ArrayBuffer or a view depending on the runtime.
+        const bytes =
+          data instanceof ArrayBuffer
+            ? new Uint8Array(data)
+            : new Uint8Array(
+                (data as ArrayBufferView).buffer,
+                (data as ArrayBufferView).byteOffset,
+                (data as ArrayBufferView).byteLength,
+              );
+        this.queued += bytes.byteLength;
+        if (this.queued > this.peakQueued) this.peakQueued = this.queued;
+        this.enqueue(async () => {
+          try {
+            await this.onDataFrame(bytes);
+          } finally {
+            this.queued -= bytes.byteLength;
+            this.consumed += bytes.byteLength;
+            this.maybeCredit();
+          }
+        });
       };
     }
   }
 
-  private enqueueControl(text: string): void {
-    this.controlQueue = this.controlQueue.then(() => this.onControl(text)).catch((e) => {
-      this.fail(e instanceof Error ? e : new Error(String(e)));
+  private enqueue(task: () => Promise<void>): void {
+    this.queue = this.queue.then(task).catch((e) => {
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (e instanceof ProtocolError) this.abort(err.message);
+      else this.fail(err);
     });
   }
 
-  private enqueueData(buf: Uint8Array): void {
-    this.controlQueue = this.controlQueue.then(() => this.onDataFrame(buf)).catch((e) => {
-      this.fail(e instanceof Error ? e : new Error(String(e)));
-    });
+  private maybeCredit(): void {
+    if (this.failed || !this.currentManifest) return;
+    if (this.consumed - this.lastCredited < this.creditStep) return;
+    this.lastCredited = this.consumed;
+    this.sendControl({ type: "credit", transferId: this.currentManifest.transferId, consumed: this.consumed });
   }
 
   private async onControl(text: string): Promise<void> {
-    let msg: ControlMsg;
-    try {
-      msg = JSON.parse(text) as ControlMsg;
-    } catch {
-      return;
-    }
+    if (this.failed) return;
+    const msg = parseControlMsg(text);
+    if (!msg) return; // malformed or unknown: ignore
+    if (msg.type !== "manifest" && msg.transferId !== this.currentManifest?.transferId) return;
     switch (msg.type) {
       case "manifest":
         await this.onManifest(msg);
-        break;
-      case "file-start":
         break;
       case "file-end":
         await this.onFileEnd(msg.fileId, msg.sha256);
@@ -162,58 +214,70 @@ export class TransferReceiver {
       case "resume":
         this.emit({ type: "resumed", transferId: msg.transferId });
         break;
+      default:
+        break;
     }
   }
 
+  /** Refuse the manifest with a reason the sender will show, and fail locally. */
+  private reject(transferId: string, reason: string): void {
+    this.sendControl({ type: "manifest-ack", transferId, accept: false, reason });
+    this.fail(new Error(reason));
+  }
+
   private async onManifest(m: Manifest): Promise<void> {
+    if (this.sawManifest) throw new ProtocolError("unexpected second manifest");
+    this.sawManifest = true;
+    // Set before any rejection so errors carry the transferId; no file is
+    // opened until validation has passed.
     this.currentManifest = m;
-    this.completeRequested = false;
-    this.totalBytes = m.totalBytes;
-    this.totalReceived = 0;
-    this.startedAt = Date.now();
-    this.files.clear();
+
+    if (m.protocol !== PROTOCOL_VERSION) return this.reject(m.transferId, "version-mismatch");
+    const invalid = validateManifest(m);
+    if (invalid) return this.reject(m.transferId, invalid);
 
     if (m.encryption) {
-      if (!this.opts.encryptionPassphrase) {
-        this.sendControl({
-          type: "manifest-ack",
-          transferId: m.transferId,
-          accept: false,
-          reason: "encryption-passphrase-required",
-        });
-        // Don't fail the done() promise — host may opt to retry with a passphrase.
-        // But for the typical case we should signal completion of the negotiation
-        // failure so callers don't hang. Surface as an error.
-        this.fail(new Error("encryption-passphrase-required"));
-        return;
-      }
+      if (!this.opts.encryptionPassphrase) return this.reject(m.transferId, "encryption-passphrase-required");
       this.cryptoKey = await deriveKey(this.opts.encryptionPassphrase, m.encryption.salt);
+    }
+
+    // Resume offsets: trust the sink only for values strictly inside the file.
+    const offsets = new Map<number, number>();
+    for (const f of m.files) {
+      const off = await this.opts.sinkFactory.resumeOffsetFor(f);
+      offsets.set(f.id, Number.isSafeInteger(off) && off > 0 && off < f.size ? off : 0);
     }
 
     // Fail up front (before any bytes move) if the destination can't hold it.
     if (this.opts.sinkFactory.checkCapacity) {
       let alreadyHave = 0;
-      for (const f of m.files) alreadyHave += await this.opts.sinkFactory.resumeOffsetFor(f);
+      for (const off of offsets.values()) alreadyHave += off;
       const problem = await this.opts.sinkFactory.checkCapacity(m.totalBytes - alreadyHave);
-      if (problem) {
-        this.sendControl({ type: "manifest-ack", transferId: m.transferId, accept: false, reason: problem });
-        this.fail(new Error(problem));
-        return;
-      }
+      if (problem) return this.reject(m.transferId, problem);
     }
+
+    this.totalBytes = m.totalBytes;
+    this.totalReceived = 0;
+    this.startedAt = Date.now();
 
     const resumeFrom: Record<number, number> = {};
     for (const f of m.files) {
-      const offset = await this.opts.sinkFactory.resumeOffsetFor(f);
+      const offset = offsets.get(f.id) ?? 0;
       const sink = await this.opts.sinkFactory.open(f);
       await sink.begin(f, offset);
+      const totalChunks = Math.ceil(f.size / m.chunkSize);
+      const startChunk = Math.floor(offset / m.chunkSize);
       this.files.set(f.id, {
         manifestEntry: f,
         sink,
         resumeOffset: offset,
+        startChunk,
+        totalChunks,
+        seen: new Uint8Array(Math.ceil((totalChunks - startChunk) / 8)),
+        chunksGot: 0,
         bytesReceived: 0,
         pendingSha: null,
-        done: offset >= f.size, // already complete from a prior session
+        finished: false,
       });
       if (offset > 0) resumeFrom[f.id] = offset;
       this.totalReceived += offset;
@@ -231,6 +295,7 @@ export class TransferReceiver {
         type: "manifest-ack",
         transferId: m.transferId,
         accept: true,
+        window: this.window,
         resumeFrom: Object.keys(resumeFrom).length ? resumeFrom : undefined,
       });
       this.emit({ type: "started", transferId: m.transferId });
@@ -238,19 +303,31 @@ export class TransferReceiver {
   }
 
   private async onDataFrame(buf: Uint8Array): Promise<void> {
-    if (!this.currentManifest || this.failed) return;
-    const { header, payload } = decodeFrame(buf);
+    if (this.failed) return;
+    const m = this.currentManifest;
+    if (!m) throw new ProtocolError("data before manifest");
+
+    let decoded: ReturnType<typeof decodeFrame>;
+    try {
+      decoded = decodeFrame(buf);
+    } catch (e) {
+      throw new ProtocolError((e as Error).message);
+    }
+    const { header, payload } = decoded;
+    if (header.payloadLength !== buf.byteLength - 16) throw new ProtocolError("trailing bytes after frame");
     const file = this.files.get(header.fileId);
-    if (!file || file.done) return;
+    if (!file) throw new ProtocolError(`unknown file ${header.fileId}`);
+    if (header.encrypted !== !!m.encryption) throw new ProtocolError("encryption flag mismatch");
+    const idx = header.chunkIndex;
+    if (idx < file.startChunk || idx >= file.totalChunks) throw new ProtocolError(`chunk ${idx} out of range`);
+    const rel = idx - file.startChunk;
+    const bit = 1 << (rel & 7);
+    if (file.seen[rel >>> 3]! & bit) throw new ProtocolError(`duplicate chunk ${idx}`);
 
     let plaintext: Uint8Array;
     if (header.encrypted) {
-      if (!this.cryptoKey) {
-        this.fail(new Error("encrypted frame without key"));
-        return;
-      }
       try {
-        plaintext = await decryptChunk(this.cryptoKey, payload);
+        plaintext = await decryptChunk(this.cryptoKey!, payload, chunkAad(m.transferId, header.fileId, idx));
       } catch {
         // AES-GCM auth failure: almost always a passphrase mismatch.
         this.abort("wrong-passphrase");
@@ -260,14 +337,16 @@ export class TransferReceiver {
       plaintext = payload;
     }
 
-    const offset = header.chunkIndex * this.currentManifest.chunkSize;
-    if (offset + plaintext.byteLength <= file.resumeOffset) {
-      // Entirely covered by prefill; sender shouldn't send this but be tolerant.
-      return;
+    const offset = idx * m.chunkSize;
+    const expected = Math.min(m.chunkSize, file.manifestEntry.size - offset);
+    if (plaintext.byteLength !== expected) {
+      throw new ProtocolError(`chunk ${idx} has ${plaintext.byteLength} bytes, expected ${expected}`);
     }
+
     await file.sink.write(offset, plaintext);
-    // Only count bytes beyond the resume prefill, so the completeness check
-    // in maybeFinishFile() stays exact for partially-overlapping chunks.
+    file.seen[rel >>> 3]! |= bit;
+    file.chunksGot++;
+    // Only count bytes beyond the resume prefix, for honest progress/speed.
     const overlap = Math.max(0, Math.min(plaintext.byteLength, file.resumeOffset - offset));
     const fresh = plaintext.byteLength - overlap;
     file.bytesReceived += fresh;
@@ -306,16 +385,21 @@ export class TransferReceiver {
 
   private async onFileEnd(fileId: number, sha: string): Promise<void> {
     const file = this.files.get(fileId);
-    if (!file || !this.currentManifest || file.done) return;
+    if (!file) throw new ProtocolError(`file-end for unknown file ${fileId}`);
+    if (file.finished || file.pendingSha !== null) return;
     file.pendingSha = sha;
     await this.maybeFinishFile(fileId, file);
   }
 
-  /** Close the file once its end marker *and* all of its bytes have arrived. */
+  /**
+   * Finalize a file once its end marker *and* every chunk have arrived.
+   * Empty files and fully-resumed files have zero chunks to wait for, so they
+   * finalize as soon as `file-end` arrives — through the same verify path.
+   */
   private async maybeFinishFile(fileId: number, file: FileState): Promise<void> {
-    if (file.done || file.pendingSha === null || !this.currentManifest) return;
-    if (file.resumeOffset + file.bytesReceived < file.manifestEntry.size) return;
-    file.done = true;
+    if (file.finished || file.pendingSha === null || !this.currentManifest) return;
+    if (file.chunksGot < file.totalChunks - file.startChunk) return;
+    file.finished = true;
     const sha = file.pendingSha;
     const transferId = this.currentManifest.transferId;
     const result = await file.sink.finish(sha);
@@ -356,8 +440,8 @@ export class TransferReceiver {
   }
 
   private allDone(): boolean {
-    if (this.files.size === 0) return false;
-    for (const f of this.files.values()) if (!f.done) return false;
+    if (this.files.size === 0) return !!this.currentManifest; // an empty transfer is done once accepted
+    for (const f of this.files.values()) if (!f.finished) return false;
     return true;
   }
 
@@ -392,8 +476,8 @@ export class TransferReceiver {
     this.failed = true;
     // Close unfinished files (after any write already in flight) so partials
     // are trimmed to their gap-free prefix and can be resumed later.
-    const pending = [...this.files.values()].filter((f) => !f.done);
-    this.controlQueue = this.controlQueue
+    const pending = [...this.files.values()].filter((f) => !f.finished);
+    this.queue = this.queue
       .catch(() => {})
       .then(() => Promise.all(pending.map((f) => f.sink.abort(err.message).catch(() => {}))))
       .then(() => {});
