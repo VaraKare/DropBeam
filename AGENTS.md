@@ -68,7 +68,9 @@ See DEPLOY.md.
   advertised window in flight; don't add a code path that sends frames without `waitForCredit`.
 - Protocol changes bump `PROTOCOL_VERSION`; peers on different versions refuse each other with `version-mismatch`.
 - Partial files are `<name>.<fingerprint>.dbpart` (ADR-002); a sender file name is always a single leaf.
-- Signaling: one room per socket, rooms of 2, client IP via `TRUST_PROXY_HOPS` only (ADR-003).
+- Signaling: one room per socket, rooms of 2. All logic in `apps/signaling/src/hub.ts`; `server.ts` (Bun, client IP via
+  `TRUST_PROXY_HOPS`, ADR-003) and `worker.ts` (Cloudflare, `CF-Connecting-IP`, ADR-007) are thin adapters.
+  Production signaling = Cloudflare Worker; deploy with `bun run deploy:cloudflare` (needs Node 22).
 - Plans and decisions: `docs/PHASES.md`, `docs/adr/`, `docs/audit/`. Update PHASES.md with the work.
 
 ## Status

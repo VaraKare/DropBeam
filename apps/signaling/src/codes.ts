@@ -1,24 +1,41 @@
-import { randomBytes } from "node:crypto";
+/**
+ * Ids, tokens and human room codes. Uses only Web Crypto
+ * (`crypto.getRandomValues`), so the same code runs on Bun and on
+ * Cloudflare Workers without Node compatibility shims.
+ */
 
 /** Base32 (Crockford) without I, L, O, U for human input. */
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+function randomBytes(n: number): Uint8Array {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return b;
+}
+
+function base64url(bytes: Uint8Array): string {
+  let s = "";
+  for (const x of bytes) s += String.fromCharCode(x);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 export function makeRoomId(): string {
   // 128-bit URL-safe id.
-  return randomBytes(16).toString("base64url");
+  return base64url(randomBytes(16));
 }
 
 export function makePeerId(): string {
-  return randomBytes(8).toString("base64url");
+  return base64url(randomBytes(8));
 }
 
 export function makeToken(): string {
-  return randomBytes(24).toString("base64url");
+  return base64url(randomBytes(24));
 }
 
 /**
- * Short human code, e.g. "K7-9P3-MX2". 9 alphabet chars (~45 bits) is enough
+ * Short human code, e.g. "K7-9P3-MX2A". 9 alphabet chars (~45 bits) is enough
  * entropy for ephemeral rooms with brute-force protection from rate limiting.
+ * 256 is a multiple of 32, so `byte % 32` is unbiased.
  */
 export function makeRoomCode(): string {
   const bytes = randomBytes(9);

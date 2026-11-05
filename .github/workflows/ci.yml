@@ -40,3 +40,15 @@ jobs:
 
       - name: Dependency advisories (fail on high or critical)
         run: bun audit --audit-level=high
+
+      # wrangler needs Node 22 (ADR-007). Bundles the Cloudflare Worker exactly
+      # as `wrangler deploy` would, without deploying or needing an account.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cloudflare Worker bundles
+        working-directory: apps/signaling
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: node node_modules/wrangler/bin/wrangler.js deploy --dry-run --outdir "$RUNNER_TEMP/cf"
