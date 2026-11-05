@@ -33,6 +33,10 @@ bun run deploy:cloudflare           # = wrangler deploy
 ```
 
 - WebSocket URL for Vercel: `wss://dropbeam-signaling.<your-subdomain>.workers.dev/ws`
+- **Live (production):** `https://dropbeam-signaling.dropbeam-signaling.workers.dev`
+  (Vercel `VITE_SIGNALING_URL` = `wss://dropbeam-signaling.dropbeam-signaling.workers.dev/ws`,
+  Production + Preview). Deployed 2026-11-05; smoke test 12/12; live two-tab
+  transfer byte-exact.
 - Settings live in `apps/signaling/wrangler.jsonc` under `vars` (same names
   as the table below). No `TRUST_PROXY_HOPS` is needed: Cloudflare's
   `CF-Connecting-IP` can't be spoofed.

@@ -145,3 +145,5 @@ a short design note in `docs/adr/` before code.
 - 2026-11-05: created from the external audit; Phase A started.
 - 2026-11-05: Phase A completed on branch `hardening/phase-a`.
 - 2026-11-05: signaling moved to Cloudflare Workers (ADR-007), replacing Northflank.
+- 2026-11-05: Worker deployed (`dropbeam-signaling.dropbeam-signaling.workers.dev`), smoke test 12/12,
+  Vercel `VITE_SIGNALING_URL` switched and production redeployed; live transfer verified.
