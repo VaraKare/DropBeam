@@ -4,7 +4,22 @@ All notable changes. Dates are UTC. The wire protocol version is in
 `packages/protocol/src/index.ts`; peers on different versions refuse each
 other with a clear "reload both pages" message.
 
-## Unreleased: signaling on Cloudflare (2026-11-05)
+## Fix: receiving in Safari and Firefox (2026-11-06)
+
+- Receiving without a chosen folder failed in Safari and Firefox with
+  "…FileSystemDirectoryHandle object could not be cloned". Those browsers
+  can't pass a private-storage (OPFS) folder from the page to a Web Worker.
+  The worker now opens the inbox itself from its name
+  (`packages/transfer/src/worker/sinkRoot.ts`); channel traffic that arrives
+  while it opens is held and replayed in order, and a cancel during setup is
+  honoured.
+- If the browser still refuses to hand something to the worker, the session
+  fails with `worker-handoff-failed` and a plain-language message instead of
+  raw browser text. Storage that can't be opened gives
+  `browser-storage-unavailable`.
+- Worker-internal only: the peer wire protocol is unchanged (still v2).
+
+## Signaling on Cloudflare (2026-11-05)
 
 - The signaling server runs on Cloudflare Workers with one Durable Object
   (ADR-007): always on, free plan, client IP from `CF-Connecting-IP`.

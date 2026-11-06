@@ -49,15 +49,22 @@ export interface M2W_StartReceive {
   /**
    * Which sink to use for writing received bytes.
    *   - "proxy":    worker forwards every sink call back to the main thread.
-   *   - "fsaccess": worker writes direct to disk via a FileSystemDirectoryHandle
-   *                 structured-cloned in from the main thread. O(1) memory.
+   *   - "fsaccess": worker writes direct to disk. O(1) memory. The folder is
+   *                 either a `FileSystemDirectoryHandle` structured-cloned in
+   *                 (user-chosen folder; Chromium only) or, with `inbox`, a
+   *                 folder the worker opens itself in the browser's private
+   *                 storage (OPFS). Safari and Firefox can't structured-clone
+   *                 OPFS handles into a worker ("could not be cloned"), so the
+   *                 inbox is always opened worker-side.
    */
   sink:
     | { kind: "proxy" }
     | {
         kind: "fsaccess";
-        /** `FileSystemDirectoryHandle` — structured-cloneable into the worker. */
-        directory: unknown;
+        /** `FileSystemDirectoryHandle` — structured-cloned (Chromium). Ignored when `inbox` is set. */
+        directory?: unknown;
+        /** Name of a folder in the browser's private storage; the worker opens it itself. */
+        inbox?: string;
         createSubdirectories?: boolean;
         /** Directory is the browser's private storage (OPFS): flatten paths + check quota. */
         browserStorage?: boolean;

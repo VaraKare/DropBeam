@@ -68,7 +68,19 @@ export interface ReceiveOptions {
     | { kind: "proxy" }
     | {
         kind: "fsaccess";
+        /** User-chosen folder (Chromium can hand it to the worker). */
         directory: FileSystemDirectoryHandle;
+        createSubdirectories?: boolean;
+        browserStorage?: boolean;
+      }
+    | {
+        kind: "fsaccess";
+        /**
+         * Folder name in the browser's private storage (OPFS). The worker opens
+         * it itself, because Safari/Firefox can't pass OPFS handles to workers.
+         */
+        inbox: string;
+        directory?: undefined;
         createSubdirectories?: boolean;
         /** `directory` is OPFS: flatten folder paths and refuse transfers over quota. */
         browserStorage?: boolean;
@@ -143,7 +155,7 @@ export class WorkerTransferHost {
     const { onEvent, ...transport } = options;
     return new Promise<void>((resolve, reject) => {
       this.activeSession = { role: "send", resolve, reject, ...(onEvent ? { onEvent } : {}) };
-      this.worker.postMessage({
+      this.startSession({
         type: "send",
         transferId,
         files: inputs,
@@ -170,7 +182,9 @@ export class WorkerTransferHost {
           sinkConfig.kind === "fsaccess"
             ? {
                 kind: "fsaccess",
-                directory: sinkConfig.directory,
+                ...("inbox" in sinkConfig && sinkConfig.inbox
+                  ? { inbox: sinkConfig.inbox }
+                  : { directory: sinkConfig.directory }),
                 ...(sinkConfig.createSubdirectories !== undefined
                   ? { createSubdirectories: sinkConfig.createSubdirectories }
                   : {}),
@@ -178,8 +192,24 @@ export class WorkerTransferHost {
               }
             : { kind: "proxy" },
       };
-      this.worker.postMessage(msg);
+      this.startSession(msg);
     });
+  }
+
+  /**
+   * Hand a session to the worker. Structured clone can throw synchronously
+   * (DataCloneError) when the browser can't pass an object to a worker; turn
+   * that into a rejected session with a recognisable reason instead of an
+   * uncaught exception that leaves the UI waiting.
+   */
+  private startSession(msg: M2WMessage): void {
+    try {
+      this.worker.postMessage(msg);
+    } catch (err) {
+      const name = err instanceof Error ? err.name : "Error";
+      const detail = err instanceof Error ? err.message : String(err);
+      this.completeSession(false, `worker-handoff-failed: ${name}: ${detail}`);
+    }
   }
 
   abort(reason = "abort"): void {

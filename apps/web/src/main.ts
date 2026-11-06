@@ -830,6 +830,12 @@ function friendlyError(err: unknown): string {
   if (/protocol-error|bad-manifest/.test(raw)) {
     return "The other device sent data DropBeam couldn't accept, so the transfer was stopped and nothing unsafe was saved. Reload both pages and try again.";
   }
+  if (/worker-handoff-failed|DataCloneError|could not be cloned/i.test(raw)) {
+    return "This browser couldn't hand the files to DropBeam's transfer engine. Update your browser, or try Chrome, Edge or Brave.";
+  }
+  if (/browser-storage-unavailable/.test(raw)) {
+    return "This browser won't let DropBeam store incoming files. Turn off private browsing, or use Chrome or Edge on a computer and choose a folder.";
+  }
   if (/already-in-room/.test(raw)) return "This page is already in a transfer. Reload the page and try again.";
   if (/server-full/.test(raw)) return "DropBeam is very busy right now. Please try again in a minute.";
   if (/receiver aborted|receiver-cancel/.test(raw)) return "The receiver cancelled the transfer.";
@@ -966,7 +972,11 @@ async function startReceive(
     s.transportPoll = startTransportPoll(link.pc);
     s.host = new WorkerTransferHost({ worker: () => new TransferWorker(), peerConnection: link.pc });
     const transfer = s.host.receive({
-      sink: { kind: "fsaccess", directory: dir, ...(browserMode ? { browserStorage: true } : {}) },
+      // The inbox is opened inside the worker: Safari and Firefox can't pass
+      // a private-storage folder to a worker ("could not be cloned").
+      sink: browserMode
+        ? { kind: "fsaccess", inbox: INBOX, browserStorage: true }
+        : { kind: "fsaccess", directory: dir },
       ...(passphrase ? { encryptionPassphrase: passphrase } : {}),
       onEvent: (e) => onTransferEvent(e, []),
     });
