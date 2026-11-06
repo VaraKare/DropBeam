@@ -4,6 +4,21 @@ All notable changes. Dates are UTC. The wire protocol version is in
 `packages/protocol/src/index.ts`; peers on different versions refuse each
 other with a clear "reload both pages" message.
 
+## Fix: Same Wi-Fi mode never connecting (2026-11-06)
+
+- Same Wi-Fi mode used no STUN, so each device only offered a disguised
+  `<uuid>.local` address that the other must resolve over multicast DNS.
+  Phones, many laptops and many routers can't, so the transfer sat at
+  "Connecting" and then timed out.
+- Same Wi-Fi now uses STUN (never TURN). A public candidate from the other
+  device is accepted only if it equals our own router's public address, and
+  once connected the chosen path is checked again
+  (`apps/web/src/ice.ts`). Files still never leave the local network; if the
+  devices turn out to be on different networks, the transfer stops before
+  any data with a clear message.
+- Clearer failure text (guest networks, mobile data, routers that isolate
+  devices).
+
 ## Fix: receiving in Safari and Firefox (2026-11-06)
 
 - Receiving without a chosen folder failed in Safari and Firefox with

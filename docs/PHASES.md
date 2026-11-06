@@ -148,3 +148,4 @@ a short design note in `docs/adr/` before code.
 - 2026-11-05: Worker deployed (`dropbeam-signaling.dropbeam-signaling.workers.dev`), smoke test 12/12,
   Vercel `VITE_SIGNALING_URL` switched and production redeployed; live transfer verified.
 - 2026-11-06: fixed "could not be cloned" when receiving in Safari/Firefox (worker opens the OPFS inbox itself).
+- 2026-11-06: fixed Same Wi-Fi mode never connecting (mDNS-only candidates); STUN + same-router guard.
