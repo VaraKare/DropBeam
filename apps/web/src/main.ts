@@ -9,6 +9,7 @@
  */
 
 import type { DeviceInfo } from "@dropbeam/protocol";
+import { parseCandidate, sameNetwork } from "./ice.js";
 import {
   SignalingClient,
   WorkerTransferHost,
@@ -28,7 +29,7 @@ interface AppEnv {
   configError: string | null;
   /** ICE servers used in "Anywhere" mode (STUN + optional TURN from env). */
   netIceServers: RTCIceServer[];
-  /** ICE servers for the current mode ([] in LAN mode → host candidates only). */
+  /** ICE servers for the current mode (STUN only in LAN mode; see setMode). */
   iceServers: RTCIceServer[];
   /** True when a TURN relay is configured. */
   hasTurn: boolean;
@@ -38,10 +39,12 @@ interface AppEnv {
   mode: ConnectionMode;
 }
 
+const STUN_SERVERS: RTCIceServer = {
+  urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"],
+};
+
 function readIceServers(): { servers: RTCIceServer[]; hasTurn: boolean } {
-  const servers: RTCIceServer[] = [
-    { urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] },
-  ];
+  const servers: RTCIceServer[] = [STUN_SERVERS];
   const turnUrls = (import.meta.env.VITE_TURN_URLS ?? "")
     .split(",")
     .map((u) => u.trim())
@@ -260,9 +263,15 @@ const modeLan = $<HTMLButtonElement>("#mode-lan");
 const modeNet = $<HTMLButtonElement>("#mode-net");
 
 function setMode(m: ConnectionMode, persist = true): void {
-  // LAN mode: no STUN/TURN, so only host candidates are gathered and the
-  // connection never leaves the local network. Anywhere mode: STUN + TURN.
-  env = { ...env, mode: m, iceServers: m === "net" ? env.netIceServers : [] };
+  // LAN mode: STUN but never TURN. Browsers hide private IPs behind random
+  // "<uuid>.local" names that the other device must resolve over multicast
+  // DNS, which phones, laptops and many routers don't do, so host candidates
+  // alone often never connect. STUN adds the router's public address, which
+  // lets two devices behind the same router reach each other through it.
+  // createLink() only accepts a public candidate equal to our own public
+  // address, so the data still never leaves the local network.
+  // Anywhere mode: STUN + TURN.
+  env = { ...env, mode: m, iceServers: m === "net" ? env.netIceServers : [STUN_SERVERS] };
   modeLan.setAttribute("aria-selected", String(m === "lan"));
   modeNet.setAttribute("aria-selected", String(m === "net"));
   if (persist) localStorage.setItem("dropbeam.mode", m);
@@ -687,6 +696,21 @@ function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; 
   const pc = new RTCPeerConnection({ iceServers: env.iceServers });
   s.pc = pc;
   const pendingIce: RTCIceCandidateInit[] = [];
+  // Same Wi-Fi mode: our router's public address(es), learned from STUN.
+  const lan = env.mode === "lan";
+  const ownPublic = new Set<string>();
+  // Resolves once we know our public address, gathering finishes, or
+  // LAN_GATHER_WAIT_MS after gathering began (gathering only starts with
+  // setLocalDescription, so the timer must not start any earlier).
+  let gatheredResolve: () => void = () => {};
+  const gathered = new Promise<void>((resolve) => { gatheredResolve = resolve; });
+  let gatherTimer: number | undefined;
+  pc.addEventListener("icegatheringstatechange", () => {
+    if (pc.iceGatheringState === "complete") gatheredResolve();
+    else if (pc.iceGatheringState === "gathering" && gatherTimer === undefined) {
+      gatherTimer = window.setTimeout(gatheredResolve, LAN_GATHER_WAIT_MS);
+    }
+  });
   let chain: Promise<void> = Promise.resolve();
   let connectTimer: number | undefined;
 
@@ -698,6 +722,13 @@ function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; 
   });
 
   pc.addEventListener("icecandidate", (ev) => {
+    if (ev.candidate) {
+      const c = parseCandidate(ev.candidate.candidate);
+      if (c?.type === "srflx") {
+        ownPublic.add(c.address);
+        gatheredResolve();
+      }
+    }
     if (!ev.candidate || s.signaling.closed) return;
     try {
       s.signaling.signal(remotePeerId, { kind: "ice", candidate: ev.candidate.toJSON() });
@@ -707,6 +738,7 @@ function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; 
   pc.addEventListener("connectionstatechange", () => {
     const st = pc.connectionState;
     if (st === "connected") {
+      if (lan) void assertSameNetwork();
       s.phase = "transfer";
       clearTimeout(connectTimer);
       setActiveTitle(s.role === "send" ? "Sending…" : "Receiving…");
@@ -723,10 +755,43 @@ function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; 
     }
   });
 
+  const addRemoteCandidate = async (c: RTCIceCandidateInit): Promise<void> => {
+    const parsed = lan ? parseCandidate(c.candidate ?? "") : null;
+    if (parsed && (parsed.type === "srflx" || parsed.type === "relay")) {
+      // Same Wi-Fi: a public candidate is only usable if it is *our* router,
+      // i.e. the same public address. Wait (briefly) for our own STUN result,
+      // without holding up the signal chain.
+      void gathered.then(() => {
+        if (parsed.type === "srflx" && ownPublic.has(parsed.address)) {
+          pc.addIceCandidate(c).catch((err) => console.warn("addIceCandidate failed", err));
+        }
+      });
+      return;
+    }
+    await pc.addIceCandidate(c).catch((err) => console.warn("addIceCandidate failed", err));
+  };
+
+  // Defence in depth for Same Wi-Fi: if the chosen path still goes to a
+  // different public address (another network), stop before any file data.
+  const assertSameNetwork = async (): Promise<void> => {
+    try {
+      const stats = await pc.getStats();
+      let pair: { localCandidateId?: string; remoteCandidateId?: string } | null = null;
+      const cands = new Map<string, { candidateType?: string; address?: string }>();
+      stats.forEach((r) => {
+        if (r.type === "candidate-pair" && (r.nominated || r.selected) && r.state === "succeeded") pair = r as never;
+        if (r.type === "remote-candidate") cands.set(r.id as string, r as never);
+      });
+      const remote = pair ? cands.get((pair as { remoteCandidateId?: string }).remoteCandidateId ?? "") : undefined;
+      if (!remote || remote.candidateType === "host" || !remote.address) return;
+      if (sameNetwork(remote.address, ownPublic)) return;
+      s.fail(new Error(LAN_OTHER_NETWORK));
+    } catch { /* stats unavailable: the candidate filter above still applies */ }
+  };
+
   const flushIce = async (): Promise<void> => {
     while (pendingIce.length) {
-      const c = pendingIce.shift()!;
-      await pc.addIceCandidate(c).catch((err) => console.warn("addIceCandidate failed", err));
+      await addRemoteCandidate(pendingIce.shift()!);
     }
   };
 
@@ -742,7 +807,7 @@ function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; 
       | { kind: "ice"; candidate: RTCIceCandidateInit };
     if (msg.kind === "ice") {
       if (pc.remoteDescription) {
-        await pc.addIceCandidate(msg.candidate).catch((err) => console.warn("addIceCandidate failed", err));
+        await addRemoteCandidate(msg.candidate);
       } else {
         pendingIce.push(msg.candidate);
       }
@@ -783,10 +848,16 @@ function createLink(s: Session, remotePeerId: string): { pc: RTCPeerConnection; 
   };
 }
 
+/** How long Same Wi-Fi mode waits for our own STUN address before judging peer candidates. */
+const LAN_GATHER_WAIT_MS = 5_000;
+
+const LAN_OTHER_NETWORK =
+  "These two devices aren't on the same network, so Same Wi-Fi mode stopped before sending anything. Join the same Wi-Fi on both, or switch both to \u201cAnywhere\u201d.";
+
 function connectFailureMessage(phase: Session["phase"]): string {
   if (phase === "transfer") return "The connection to the other device dropped.";
   if (env.mode === "lan") {
-    return "Couldn't connect over the local network. Make sure both devices are on the same Wi-Fi, or switch to “Anywhere” mode.";
+    return "Couldn't connect over Wi-Fi. Check both devices are on the same Wi-Fi (not a guest network, and not one on mobile data). Some routers stop devices from seeing each other; if so, switch both to \u201cAnywhere\u201d.";
   }
   return env.hasTurn
     ? "Couldn't open a connection between the two devices, even through the relay. Check that neither network blocks WebRTC."
@@ -1949,7 +2020,7 @@ const popoverBody = $<HTMLElement>("#popover-body");
 const popoverArrow = $<HTMLElement>("#popover-arrow");
 
 const INFO_TEXT: Record<string, string> = {
-  lan: `<strong>Same Wi-Fi mode</strong> connects two devices on the same router, and <b>your files never leave that network</b>. WebRTC uses only <code>host</code> ICE candidates (your private LAN IPs), so the data runs directly over your Wi-Fi. Both devices still need a little internet for the first handshake with our signaling server, unless you run DropBeam on your own network (<code>bun run lan</code>), which needs no internet at all.`,
+  lan: `<strong>Same Wi-Fi mode</strong> connects two devices on the same router, and <b>your files never leave that network</b>. The two devices find each other through your router (a STUN lookup tells each device its router's address; there is never a relay), and DropBeam refuses any path that leads to a different network, so the data runs directly over your Wi-Fi. Both devices still need a little internet for the first handshake with our signaling server, unless you run DropBeam on your own network (<code>bun run lan</code>), which needs no internet at all.`,
   net: `<strong>Anywhere mode</strong> works across the open internet, even when the two devices are on different networks behind NATs. STUN servers help the peers discover their public addresses and hole-punch a direct path. If that fails, a TURN relay forwards encrypted bytes — we never see them in plaintext.`,
   passphrase: `By default your transfer is encrypted in transit (<code>DTLS</code> on the WebRTC channel). A <strong>passphrase</strong> adds a second layer: every chunk is encrypted with <code>AES-GCM-256</code> using a key derived from your passphrase via <code>PBKDF2-200k</code>. Even if someone broke into our signaling server (we don't store files anyway), they couldn't read your bytes.`,
   folder: `Receivers stream bytes <b>directly to disk</b> using the File System Access API — files never get loaded into RAM, so even a 500&nbsp;GB transfer doesn't slow your browser. Choosing a folder works in Chrome and Edge on computers. Without a folder (and always on phones, Safari and Firefox) files are held in the browser's private storage while they arrive \u2014 still streamed to disk, not RAM \u2014 and you save each one with a tap at the end. That needs about twice the free space while you save, and leftovers are deleted after 24 hours.`,
@@ -2100,7 +2171,7 @@ const BLOG_HTML = `
 <ul>
   <li><strong>Mega files, no Chrome bloat.</strong> Streams from disk straight to disk via the File System Access API. Memory use stays flat whether you're sending 5 MB or 50 GB. Upload services cap free transfers and keep a copy on their servers; we don't. (Phones and Safari/Firefox receive into browser storage first, so there the limit is your free space.)</li>
   <li><strong>Single share or bulk share.</strong> Drop one file or fifty in one go. Everything goes in one transfer session; the receiver re-reads every file and checks its SHA-256 against the sender's before calling it done.</li>
-  <li><strong>Works over the internet and on your local network.</strong> "Same Wi-Fi" mode uses only host candidates, so files never leave your network (fully offline if you self-host with <code>bun run lan</code>). "Anywhere" mode punches through NATs with STUN; a TURN relay is the last-resort fallback.</li>
+  <li><strong>Works over the internet and on your local network.</strong> "Same Wi-Fi" mode only connects through your own router and never uses a relay, so files never leave your network (fully offline if you self-host with <code>bun run lan</code>). "Anywhere" mode punches through NATs with STUN; a TURN relay is the last-resort fallback.</li>
   <li><strong>End-to-end encrypted in transit, optionally with your own passphrase.</strong> DTLS is on by default. Tick the passphrase box and every chunk is AES-GCM-256 encrypted with a key only you and the receiver know.</li>
   <li><strong>Browser-only. Cross-platform by accident.</strong> Phone ↔ Windows. Mac ↔ Android. iPad ↔ Linux. Same code path on every device — there's no platform-specific app to maintain.</li>
 </ul>
