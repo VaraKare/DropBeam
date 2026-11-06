@@ -20,6 +20,7 @@ import type { FileSinkFactory, TransferEvent } from "../types.js";
 import { ProxiedPeerConnection } from "./proxiedPeer.js";
 import { createWorkerFileSource } from "./workerFileSource.js";
 import { createWorkerSinkProxy, type SinkTransport } from "./workerSinkProxy.js";
+import { openSinkRoot, type SinkRoot } from "./sinkRoot.js";
 import type {
   ChannelId,
   M2WMessage,
@@ -54,7 +55,19 @@ class WorkerSession {
     | ((requestId: RequestId, ok: boolean, value?: unknown, error?: string) => void)
     | null = null;
 
+  /**
+   * While a receive session is opening its storage (async), channel traffic
+   * from the main thread is held here and replayed in order afterwards, so
+   * nothing that arrives during setup is dropped.
+   */
+  private setupQueue: M2WMessage[] | null = null;
+  private abortedDuringSetup: string | null = null;
+
   handle(msg: M2WMessage): void {
+    if (this.setupQueue && msg.type.startsWith("ch:")) {
+      this.setupQueue.push(msg);
+      return;
+    }
     switch (msg.type) {
       case "init":
         // Reserved for future config. No-op for now.
@@ -63,9 +76,10 @@ class WorkerSession {
         void this.startSend(msg);
         break;
       case "receive":
-        this.startReceive(msg);
+        void this.startReceive(msg);
         break;
       case "abort":
+        if (this.setupQueue) this.abortedDuringSetup = msg.reason ?? "abort";
         this.sender?.abort(msg.reason ?? "abort");
         this.receiver?.abort(msg.reason ?? "abort");
         break;
@@ -164,14 +178,32 @@ class WorkerSession {
     }
   }
 
-  private startReceive(msg: Extract<M2WMessage, { type: "receive" }>): void {
+  private async startReceive(msg: Extract<M2WMessage, { type: "receive" }>): Promise<void> {
     if (this.activeRole) {
       this.finishWithError("worker already busy");
       return;
     }
     this.activeRole = "receiver";
+    let sinkFactory: FileSinkFactory;
+    this.setupQueue = [];
+    try {
+      sinkFactory = this.buildSinkFactory(msg.sink, await openSinkRoot(msg.sink));
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      this.setupQueue = null;
+      this.activeRole = null;
+      this.finishWithError(`browser-storage-unavailable: ${e.name}: ${e.message}`);
+      return;
+    }
+    if (this.abortedDuringSetup !== null) {
+      const reason = this.abortedDuringSetup;
+      this.abortedDuringSetup = null;
+      this.setupQueue = null;
+      this.activeRole = null;
+      this.finishWithError(`receiver aborted: ${reason}`);
+      return;
+    }
     const pc = this.ensurePC();
-    const sinkFactory = this.buildSinkFactory(msg.sink);
     const options = {
       ...msg.options,
       sinkFactory,
@@ -183,6 +215,10 @@ class WorkerSession {
     // Any incoming channels that landed before `attach()` ran are now ready
     // to be adopted. `attach()` wired `ondatachannel`, so this is safe.
     this.drainPendingIncoming();
+    // Replay channel traffic that arrived while storage was opening.
+    const held = this.setupQueue ?? [];
+    this.setupQueue = null;
+    for (const m of held) this.handle(m);
     receiver
       .done()
       .then(() => post({ type: "done", ok: true }))
@@ -198,11 +234,11 @@ class WorkerSession {
 
   private buildSinkFactory(
     sink: Extract<M2WMessage, { type: "receive" }>["sink"],
+    root: SinkRoot | null,
   ): FileSinkFactory {
     if (sink.kind === "fsaccess") {
-      const dir = sink.directory as Parameters<
-        typeof createFileSystemAccessSinkFactory
-      >[0]["root"];
+      if (!root) throw new Error("no folder to save into");
+      const dir = root;
       return createFileSystemAccessSinkFactory({
         root: dir,
         ...(sink.createSubdirectories !== undefined
