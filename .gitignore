@@ -19,6 +19,8 @@ bun.lockb
 tmp/
 testdata/received/
 testdata/sent/
-.claude/
+# Claude Code: share project skills, agents, CLAUDE.md and launch.json; keep personal settings and worktrees local.
+.claude/settings.local.json
+.claude/worktrees/
 graphify-out/
 .wrangler/
