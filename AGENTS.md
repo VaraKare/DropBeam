@@ -5,7 +5,7 @@
 **DropBeam** is a browser-first, zero-account, peer-to-peer file transfer web app
 (an open AirDrop / WeTransfer alternative).
 - WebRTC DataChannels carry the files; no server ever holds them.
-- A Bun WebSocket **signaling server** only pairs devices via a short code and relays SDP/ICE.
+- A WebSocket **signaling server** (Cloudflare Worker + Durable Object in production; Bun for local/self-host) only pairs devices via a short code and relays SDP/ICE.
 - Encrypted in transit (DTLS); optional passphrase adds AES-GCM-256 per chunk.
 
 Scope: **the web app + signaling server only.** Native, CLI, Rust/QUIC and
@@ -20,7 +20,7 @@ apps/
     src/main.ts        UI state machine, session orchestration, ICE handling, inbox (OPFS), history
     src/styles.css     Neobrutalist design system (cream paper, black borders, hard shadows)
     public/sw.js       Service worker (prod only): network-first HTML, cache-first /assets
-  signaling/           Bun WebSocket server: rooms, codes (30 min TTL), relay, rate limits, /healthz
+  signaling/           Signaling hub (hub.ts) + Cloudflare (worker.ts) and Bun (server.ts) adapters: rooms, codes (30 min TTL), relay, rate limits, /healthz
 packages/
   protocol/            Wire types: signaling msgs, control msgs (manifest, file-end, complete, complete-ack, abort), 16-byte frame header
   transfer/            Engine
@@ -47,10 +47,15 @@ Receiving without a chosen folder uses the browser's OPFS inbox (`dropbeam-inbox
 
 ## Deploy
 
-Vercel builds `apps/web` from the **repo root** (root `vercel.json`). Signaling runs on a
-WebSocket-capable host (Koyeb/Render/Fly; `apps/signaling/Dockerfile`, `render.yaml`).
+Vercel builds `apps/web` from the **repo root** (root `vercel.json`). Production signaling is the
+Cloudflare Worker (`cd apps/signaling && bun run deploy:cloudflare`, ADR-007); Bun/Docker (`Dockerfile`, `render.yaml`) is for self-hosting.
 Build-time env: `VITE_SIGNALING_URL` (required in prod), `VITE_TURN_URLS/USERNAME/CREDENTIAL` (optional).
-See DEPLOY.md.
+See DEPLOY.md. Skill: `dropbeam-deploy`.
+
+## Project tooling
+
+Skills: `dropbeam-verify`, `dropbeam-invariants`, `dropbeam-release`, `dropbeam-deploy`, `dropbeam-device-test`.
+Agents: `test-runner`, `security-auditor`, `protocol-reviewer`, `docs-keeper`. Who reads which doc: `docs/README.md`.
 
 ## Invariants — don't break these
 
