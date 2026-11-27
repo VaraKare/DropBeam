@@ -150,3 +150,4 @@ a short design note in `docs/adr/` before code.
 - 2026-11-06: fixed "could not be cloned" when receiving in Safari/Firefox (worker opens the OPFS inbox itself).
 - 2026-11-06: fixed Same Wi-Fi mode never connecting (mDNS-only candidates); STUN + same-router guard.
 - 2026-11-27: project tooling: 5 skills (`.claude/skills/dropbeam-*`), 4 agents (`.claude/agents/`), reader index `docs/README.md`; CLAUDE.md/AGENTS.md now name Cloudflare as production signaling.
+- 2026-11-27: live public stats: `/stats` page + footer ticker, signaling `stats` message (paired rooms, once), `GET /stats`, daily aggregate rows in Durable Object SQLite.

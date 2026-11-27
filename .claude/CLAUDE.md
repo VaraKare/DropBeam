@@ -16,11 +16,12 @@ desktop experiments were moved to the `archive/native` branch.
 ```
 apps/
   web/                 Vite + TS web app (the product)
-    index.html         All stages' markup (idle, send-pick, send-share, recv-pick, active, done, legal, blog)
+    index.html         All stages' markup (idle, send-pick, send-share, recv-pick, active, done, legal, blog, stats)
     src/main.ts        UI state machine, session orchestration, ICE handling, inbox (OPFS), history
+    src/stats.ts       /stats page, footer ticker, the sender's one `stats` report
     src/styles.css     Neobrutalist design system (cream paper, black borders, hard shadows)
     public/sw.js       Service worker (prod only): network-first HTML, cache-first /assets
-  signaling/           Signaling hub (hub.ts) + Cloudflare (worker.ts) and Bun (server.ts) adapters: rooms, codes (30 min TTL), relay, rate limits, /healthz
+  signaling/           Signaling hub (hub.ts) + Cloudflare (worker.ts) and Bun (server.ts) adapters: rooms, codes (30 min TTL), relay, rate limits, /healthz, aggregate /stats (stats.ts)
 packages/
   protocol/            Wire types: signaling msgs, control msgs (manifest, file-end, complete, complete-ack, abort), 16-byte frame header
   transfer/            Engine

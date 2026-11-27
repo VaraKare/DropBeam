@@ -18,6 +18,7 @@ import {
 import TransferWorker from "@dropbeam/transfer/worker/transferWorker?worker";
 
 import { encodeQr, qrToSvg } from "./qr.js";
+import { initStatsTicker, renderStats, reportTransfer, selectedPath, statsEndpoint } from "./stats.js";
 
 /* ─────────────── config ─────────────── */
 
@@ -184,7 +185,7 @@ const $ = <T extends Element>(sel: string): T => {
   return el;
 };
 
-type Stage = "idle" | "send-pick" | "send-share" | "recv-pick" | "active" | "done" | "legal" | "blog";
+type Stage = "idle" | "send-pick" | "send-share" | "recv-pick" | "active" | "done" | "legal" | "blog" | "stats";
 
 const stages: Record<Stage, HTMLElement> = {
   idle:        $('[data-stage="idle"]'),
@@ -195,6 +196,7 @@ const stages: Record<Stage, HTMLElement> = {
   done:        $('[data-stage="done"]'),
   legal:       $('[data-stage="legal"]'),
   blog:        $('[data-stage="blog"]'),
+  stats:       $('[data-stage="stats"]'),
 };
 
 let history: Stage[] = ["idle"];
@@ -979,8 +981,13 @@ async function startSend(files: File[], passphrase: string | undefined): Promise
     void acquireWakeLock();
 
     await race(s, link.start());
-    await race(s, transfer);
+    await race(s, transfer); // resolves only after the receiver's complete-ack
     s.completed = true;
+    // Public aggregate counter; best-effort, at most ~1 s before teardown.
+    await Promise.race([
+      reportTransfer((m) => s.signaling.send(m), s.pc, files),
+      new Promise((r) => setTimeout(r, 1000)),
+    ]);
     recordHistory(s, true);
     onTransferDone("Files delivered.");
   } catch (err) {
@@ -1413,26 +1420,8 @@ function startTransportPoll(pc: RTCPeerConnection): number {
   setTransport("handshaking");
   return window.setInterval(async () => {
     try {
-      const stats = await pc.getStats();
-      let nominatedPair: { localCandidateId?: string; remoteCandidateId?: string } | null = null;
-      const candidatesById = new Map<string, { type?: string; candidateType?: string; address?: string }>();
-      stats.forEach((s) => {
-        if (s.type === "candidate-pair" && (s.nominated || s.selected)) {
-          nominatedPair = s as unknown as { localCandidateId?: string; remoteCandidateId?: string };
-        }
-        if (s.type === "local-candidate" || s.type === "remote-candidate") {
-          candidatesById.set(s.id as string, s as unknown as { candidateType?: string; address?: string });
-        }
-      });
-      if (nominatedPair) {
-        const local = candidatesById.get((nominatedPair as { localCandidateId?: string }).localCandidateId ?? "");
-        const remote = candidatesById.get((nominatedPair as { remoteCandidateId?: string }).remoteCandidateId ?? "");
-        const ltype = local?.candidateType ?? "";
-        const rtype = remote?.candidateType ?? "";
-        if (ltype === "relay" || rtype === "relay") setTransport("relayed");
-        else if (ltype === "host" && rtype === "host") setTransport("lan");
-        else setTransport("p2p");
-      }
+      const path = await selectedPath(pc);
+      if (path) setTransport(path === "relay" ? "relayed" : path === "lan" ? "lan" : "p2p");
     } catch { /* getStats can transiently fail */ }
   }, 1500);
 }
@@ -1807,6 +1796,11 @@ const ROUTES: Record<string, RouteMeta> = {
     description: "Every DropBeam capability: mega-file streaming, same-Wi-Fi transfers that stay on your network, QR pairing, encrypted bulk transfers, browser-only cross-platform.",
     stage: "blog",
   },
+  "/stats": {
+    title: "DropBeam live stats · transfers per day, data moved, direct vs relayed",
+    description: "Public, aggregate-only DropBeam usage: transfers and files beamed today, the last 30 days, all-time data moved, and how much went device to device.",
+    stage: "stats",
+  },
   "/privacy": {
     title: "DropBeam Privacy · we never see your files",
     description: "DropBeam is peer-to-peer. The signaling server only introduces two devices. No upload bucket, no analytics, no cookies, no accounts.",
@@ -1858,6 +1852,7 @@ function routeOnLoad(): void {
 
   // Otherwise route to the right in-app stage based on pathname.
   if (meta?.stage === "blog") showBlog();
+  else if (meta?.stage === "stats") showStats();
   else if (meta?.stage === "legal" && meta.legal) showLegal(meta.legal);
 }
 
@@ -2100,16 +2095,17 @@ const PRIVACY_HTML = `
   <li>Forwards opaque WebRTC handshake blobs (<code>SDP</code> + <code>ICE</code>) between the two peers so they can find each other. We don't decrypt or inspect these — they're just relay bytes.</li>
   <li>Records the requesting IP for rate-limiting only (30 messages/sec/IP). The IP isn't stored, persisted, or tied to anything.</li>
 </ul>
+<p><strong>Public stats.</strong> When a sender finishes a verified transfer, the app tells the signaling server three numbers: total bytes, number of files, and whether the path was same Wi-Fi, direct or relayed. The server only adds them to <em>per-day totals</em> (plus rooms created and paired), which anyone can see on the live stats page (<code>/stats</code>). Aggregate counts only: no IP addresses, codes, device or file names, and no per-user or per-transfer rows are ever stored.</p>
 
 <h3>What we never see</h3>
 <ul>
-  <li><strong>File names, sizes, types, or contents.</strong> Once two peers shake hands, the data channel goes peer-to-peer; bytes flow over WebRTC's DTLS-encrypted tunnel directly between the devices.</li>
+  <li><strong>File names, types, or contents.</strong> Once two peers shake hands, the data channel goes peer-to-peer; bytes flow over WebRTC's DTLS-encrypted tunnel directly between the devices. (A finished transfer's total size and file count are only added to the public daily totals above.)</li>
   <li><strong>Passphrases.</strong> If you set one, the key is derived in your browser via PBKDF2 and used to AES-GCM-encrypt every chunk before it leaves the device.</li>
   <li><strong>Account info.</strong> There are no accounts.</li>
 </ul>
 
 <h3>Cookies, analytics, tracking</h3>
-<p><strong>None.</strong> No cookies, no third-party analytics, no fingerprinting. What your browser keeps, on this device only:</p>
+<p><strong>None.</strong> No cookies, no third-party analytics, no fingerprinting (the public stats above are anonymous daily totals, not tracking). What your browser keeps, on this device only:</p>
 <ul>
   <li>A random device id and your chosen connection mode (<code>localStorage</code>).</li>
   <li>A short list of your recent transfers: file names, sizes, the other device's name, and time. Never file contents, and never sent anywhere. Tap <em>Clear</em> under "Recent transfers" to erase it.</li>
@@ -2216,6 +2212,23 @@ function showBlog(): void {
 for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-blog]")) {
   btn.addEventListener("click", () => showBlog());
 }
+
+/* ─────────────── live stats stage (render code in stats.ts) ─────────────── */
+
+const statsUrl = (): string | null => (env.configError ? null : statsEndpoint(env.signalingUrl));
+
+function showStats(): void {
+  goto("stats");
+  void renderStats($<HTMLElement>("#stats-body"), statsUrl());
+}
+
+for (const a of document.querySelectorAll<HTMLAnchorElement>("[data-stats]")) {
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    showStats();
+  });
+}
+void initStatsTicker($<HTMLElement>("#stats-ticker"), statsUrl());
 
 /* ─────────────── safeguards: keep mobile transfers alive ─────────────── */
 

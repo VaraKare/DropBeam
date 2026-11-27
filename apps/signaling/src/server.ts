@@ -7,6 +7,7 @@ import { existsSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { clientIp, loadConfig, originAllowed } from "./config.js";
 import { Hub, type HubSocket } from "./hub.js";
+import { statsHeaders } from "./stats.js";
 
 const config = loadConfig(process.env);
 const hub = new Hub(config);
@@ -80,6 +81,17 @@ const server = Bun.serve<SocketData>({
     const ip = () => clientIp(srv.requestIP(req)?.address, req.headers.get("x-forwarded-for"), config.trustProxyHops);
 
     if (url.pathname === "/healthz") return json(hub.health());
+    // Aggregate counters, in memory only on Bun. When this process also
+    // serves the web app (WEB_ROOT), a browser navigating to /stats gets the
+    // page; fetch() calls (no text/html in Accept) get the JSON.
+    if (url.pathname === "/stats" && req.method === "GET") {
+      const wantsPage = WEB_ROOT && (req.headers.get("accept") ?? "").includes("text/html");
+      if (!wantsPage) {
+        return new Response(JSON.stringify(hub.statsSnapshot()), {
+          headers: statsHeaders(config.allowedOrigins, req.headers.get("origin")),
+        });
+      }
+    }
     if (url.pathname === "/whoami") {
       // Deploy check for TRUST_PROXY_HOPS (ADR-003): shows callers only their
       // own address as the rate limiter sees it. Not logged, not stored.
@@ -102,7 +114,7 @@ const server = Bun.serve<SocketData>({
       const r = await serveStatic(WEB_ROOT, url.pathname);
       if (r) return r;
     }
-    return new Response("DropBeam signaling. WS at /ws, health at /healthz.", { status: 200 });
+    return new Response("DropBeam signaling. WS at /ws, health at /healthz, stats at /stats.", { status: 200 });
   },
   websocket: {
     maxPayloadLength: config.maxMessageBytes,

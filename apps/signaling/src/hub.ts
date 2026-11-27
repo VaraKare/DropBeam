@@ -16,6 +16,7 @@ import {
 } from "@dropbeam/protocol";
 import { RateLimiter } from "./rateLimit.js";
 import { RoomManager, type PeerSlot, type Room } from "./room.js";
+import { Stats, type StatsSnapshot } from "./stats.js";
 
 export interface HubOptions {
   maxRooms: number;
@@ -46,8 +47,11 @@ export class Hub {
   private readonly connectionsByIp = new Map<string, number>();
   private lastPrune = Date.now();
   private readonly startedAt = Date.now();
+  /** Aggregate public counters (see stats.ts); adapters may persist them. */
+  readonly stats: Stats;
 
-  constructor(private readonly opts: HubOptions) {
+  constructor(private readonly opts: HubOptions, stats: Stats = new Stats()) {
+    this.stats = stats;
     this.rooms = new RoomManager({
       defaultTtlMs: 30 * 60 * 1000, // 30 min
       maxTtlMs: 4 * 60 * 60 * 1000, // 4 h
@@ -112,6 +116,11 @@ export class Hub {
     };
   }
 
+  /** Public aggregate counters for `GET /stats`. */
+  statsSnapshot(): StatsSnapshot {
+    return this.stats.snapshot();
+  }
+
   /** Drop expired rooms and idle limiter buckets (lazily, from normal traffic). */
   private maybePrune(): void {
     const now = Date.now();
@@ -150,6 +159,7 @@ export class Hub {
           peer.send = (m) => this.reply(ws, m);
           ws.room = room;
           ws.peer = peer;
+          this.stats.roomCreated();
           this.reply(ws, {
             type: "room-created",
             roomId: room.roomId,
@@ -179,6 +189,10 @@ export class Hub {
           peer.send = (m) => this.reply(ws, m);
           ws.room = room;
           ws.peer = peer;
+          if (!room.paired && room.peers.size >= 2) {
+            room.paired = true;
+            this.stats.roomPaired();
+          }
           const others = [...room.peers.values()]
             .filter((p) => p.peerId !== peer.peerId)
             .map((p) => ({ peerId: p.peerId, device: p.device }));
@@ -222,6 +236,16 @@ export class Hub {
       case "leave-room":
         this.leaveCurrentRoom(ws, "leave");
         return;
+
+      case "stats": {
+        // Only from a socket in a room that really paired, once per room.
+        // Silently ignored otherwise: the client never waits for a reply.
+        const { room } = ws;
+        if (!room || !room.paired || room.statsReported) return;
+        room.statsReported = true;
+        this.stats.transfer(msg.bytes, msg.files, msg.path);
+        return;
+      }
     }
   }
 
