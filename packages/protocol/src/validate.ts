@@ -11,6 +11,7 @@ import type {
   ClientToServerMsg,
   DeviceInfo,
   DeviceKind,
+  StatsPath,
 } from "./signaling.js";
 import {
   MAX_CHUNK_SIZE,
@@ -147,7 +148,12 @@ export const SIGNALING_LIMITS = {
   peerId: 64,
   minTtlSeconds: 60,
   maxTtlSeconds: 4 * 60 * 60,
+  /** One `stats` report: at most 1 TiB and 10,000 files. */
+  maxStatsBytes: 2 ** 40,
+  maxStatsFiles: 10_000,
 } as const;
+
+const STATS_PATHS: ReadonlySet<StatsPath> = new Set<StatsPath>(["direct", "lan", "relay"]);
 
 function parseDevice(v: unknown): DeviceInfo | null {
   if (!isObj(v)) return null;
@@ -192,6 +198,11 @@ export function parseClientMsg(v: unknown): ClientToServerMsg | null {
       return { type: "leave-room" };
     case "ping":
       return isFiniteNum(v.t) ? { type: "ping", t: v.t } : null;
+    case "stats":
+      if (!isSafeUint(v.bytes) || v.bytes > SIGNALING_LIMITS.maxStatsBytes) return null;
+      if (!isSafeUint(v.files) || v.files < 1 || v.files > SIGNALING_LIMITS.maxStatsFiles) return null;
+      if (typeof v.path !== "string" || !STATS_PATHS.has(v.path as StatsPath)) return null;
+      return { type: "stats", bytes: v.bytes, files: v.files, path: v.path as StatsPath };
     default:
       return null;
   }

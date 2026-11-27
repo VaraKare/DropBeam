@@ -27,6 +27,10 @@ export interface Room {
   expiresAt: number;
   /** Soft cap on peers per room (typically 2 for 1:1; bumped for multicast). */
   capacity: number;
+  /** True once a second peer has joined (counts as one "paired" room). */
+  paired: boolean;
+  /** True once a `stats` report was accepted for this room (one per room). */
+  statsReported: boolean;
 }
 
 export interface RoomManagerOptions {
@@ -70,6 +74,8 @@ export class RoomManager {
       createdAt: Date.now(),
       expiresAt: Date.now() + ttl,
       capacity: this.opts.defaultCapacity,
+      paired: false,
+      statsReported: false,
     };
     const peer: PeerSlot = {
       peerId: makePeerId(),

@@ -4,6 +4,22 @@ All notable changes. Dates are UTC. The wire protocol version is in
 `packages/protocol/src/index.ts`; peers on different versions refuse each
 other with a clear "reload both pages" message.
 
+## Live public stats (2026-11-27)
+
+- New `/stats` page: transfers, files and data moved today and all time, a
+  30-day bar chart (inline SVG, no library) and how much went same Wi-Fi /
+  direct / relayed. The footer shows "N files beamed today".
+- After the receiver's `complete-ack`, the sender sends one signaling message
+  `{type:"stats", bytes, files, path}`. The hub counts it only from a socket in
+  a room that really paired, once per room (bytes ≤ 1 TiB, files ≤ 10,000).
+  Fire-and-forget: older servers answer `invalid-message`, which is ignored.
+- Aggregate counts only: one row per UTC day (rooms created/paired,
+  transfers, bytes, files, path), no IPs, codes, names or per-user rows.
+  `GET /stats` on both adapters (`cache-control: public, max-age=60`, CORS).
+  Cloudflare persists the daily rows to the Durable Object's SQLite about once
+  a minute (and when the last socket closes); Bun keeps them in memory.
+- Signaling-only change: the peer wire protocol (`PROTOCOL_VERSION`) is unchanged.
+
 ## Fix: Same Wi-Fi mode never connecting (2026-11-06)
 
 - Same Wi-Fi mode used no STUN, so each device only offered a disguised

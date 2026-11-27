@@ -476,6 +476,24 @@
         <article id="blog-body" class="blog-body"></article>
       </section>
 
+      <!-- ─── STAGE: live stats (rendered by src/stats.ts) ─── -->
+      <section data-stage="stats" class="stage">
+        <div class="stage-head">
+          <button class="back-btn" data-back type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="m15 6-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Back
+          </button>
+          <h2 class="stage-title">Live stats</h2>
+        </div>
+        <div id="stats-body" class="stats-body" aria-live="polite">
+          <p class="muted">Loading…</p>
+        </div>
+        <p class="muted small stats-note">
+          Aggregate counts only: one row per day, no IP addresses, file names or per-user records.
+          Counted when a sender finishes a verified transfer. Updated about once a minute.
+        </p>
+      </section>
+
       <!-- ─── STAGE: done ─── -->
       <section data-stage="done" class="stage">
         <div class="done-card">
@@ -515,6 +533,7 @@
         <button class="foot-link" type="button" data-blog>About</button>
         <button class="foot-link" type="button" data-legal="privacy">Privacy</button>
         <button class="foot-link" type="button" data-legal="terms">Terms</button>
+        <a class="foot-link" href="/stats" data-stats>Live stats</a>
         <a href="https://github.com/VaraKare/DropBeam" target="_blank" rel="noopener">Source · MIT</a>
       </div>
       <div class="foot-col">
@@ -527,6 +546,7 @@
       <div class="foot-col">
         <h4>Status</h4>
         <p>Signaling: <code id="sig-url">—</code></p>
+        <p><a id="stats-ticker" class="stats-ticker hidden" href="/stats" data-stats></a></p>
         <p class="muted">Best in Chrome · Edge · Safari 16+</p>
       </div>
     </footer>

@@ -6,6 +6,10 @@
  *
  * Checks health, whoami, create → join → relay → peer-left, room capacity 2,
  * one-room-per-socket, strict validation, and that rooms are cleaned up.
+ * Also checks GET /stats (shape, cache + CORS headers) and that an unpaired
+ * socket can't report a transfer. Only against a local server (localhost /
+ * 127.0.0.1) does it report one real `stats` message and expect the count to
+ * rise, so public production numbers are never inflated by smoke runs.
  * Creates at most 3 rooms (well under the per-address limits). Exit 1 on failure.
  */
 
@@ -48,6 +52,13 @@ function client(): Promise<{ send(m: object | string): void; next(type: string, 
   });
 }
 
+type StatsBody = { today: { transfers: number }; last30Days: unknown[]; allTime: { transfers: number; bytes: number } };
+async function getStats(): Promise<{ body: StatsBody; res: Response }> {
+  const res = await fetch(`${base}/stats`, { headers: { origin: "https://smoke.invalid", accept: "application/json" } });
+  return { body: (await res.json()) as StatsBody, res };
+}
+const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(base);
+
 async function healthRooms(): Promise<number> {
   const h = (await (await fetch(`${base}/healthz`)).json()) as { ok: boolean; rooms: number };
   return h.rooms;
@@ -64,7 +75,18 @@ async function main(): Promise<void> {
   const spoofed = await (await fetch(`${base}/whoami`, { headers: { "x-forwarded-for": "1.2.3.4" } })).json() as { ip: string };
   check("whoami ignores a spoofed X-Forwarded-For", spoofed.ip === who.ip && spoofed.ip !== "1.2.3.4", `ip=${who.ip}`);
 
+  const st = await getStats();
+  check(
+    "GET /stats shape",
+    typeof st.body.allTime?.transfers === "number" && Array.isArray(st.body.last30Days) && st.body.last30Days.length === 30,
+    `allTime.transfers=${st.body.allTime?.transfers}`,
+  );
+  check("/stats cacheable for 60 s", st.res.headers.get("cache-control") === "public, max-age=60");
+  check("/stats has a CORS policy", st.res.headers.has("access-control-allow-origin") || (st.res.headers.get("vary") ?? "").includes("origin"));
+  const transfersBefore = st.body.allTime.transfers;
+
   const a = await client();
+  a.send({ type: "stats", bytes: 1, files: 1, path: "direct" }); // not in a room → ignored
   a.send({ type: "create-room", device });
   const created = await a.next("room-created");
   check("create-room", typeof created.code === "string", String(created.code));
@@ -84,6 +106,18 @@ async function main(): Promise<void> {
   a.send({ type: "signal", to: joined.peerId, data: { sdp: "hello" } });
   const sig = await b.next("signal");
   check("signal relayed", (sig.data as { sdp?: string }).sdp === "hello" && sig.from === created.peerId);
+
+  if (isLocal) {
+    a.send({ type: "stats", bytes: 1024, files: 1, path: "lan" });
+    a.send({ type: "stats", bytes: 1024, files: 1, path: "lan" }); // duplicate → ignored
+    a.send({ type: "ping", t: 7 });
+    await a.next("pong"); // the reports were processed before this
+    const after = (await getStats()).body.allTime.transfers;
+    check("stats report counted once (paired room)", after === transfersBefore + 1, `${transfersBefore} → ${after}`);
+  } else {
+    const after = (await getStats()).body.allTime.transfers;
+    check("unpaired stats report ignored", after >= transfersBefore, "(live server: no report sent)");
+  }
 
   const c = await client();
   c.send({ type: "join-room", roomIdOrCode: created.code, device });

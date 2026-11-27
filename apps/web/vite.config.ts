@@ -9,6 +9,12 @@ export default defineConfig({
         target: "ws://127.0.0.1:8787",
         ws: true,
       },
+      // fetch() of the stats JSON goes to signaling; browser navigations to
+      // /stats (Accept: text/html) fall through to the page.
+      "/stats": {
+        target: "http://127.0.0.1:8787",
+        bypass: (req) => ((req.headers.accept ?? "").includes("text/html") ? req.url : undefined),
+      },
     },
   },
   worker: {

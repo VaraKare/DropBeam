@@ -25,6 +25,11 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>/stats</loc>
+    <changefreq>daily</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>/privacy</loc>
     <changefreq>yearly</changefreq>
     <priority>0.4</priority>

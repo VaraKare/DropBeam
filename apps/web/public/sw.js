@@ -41,6 +41,9 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/ws")) return;
 
   const isPage = req.mode === "navigate" || (req.headers.get("accept") || "").includes("text/html");
+  // Same-origin signaling JSON (LAN self-host): always live, never cached
+  // under the same key as the /stats page.
+  if (!isPage && (url.pathname === "/stats" || url.pathname === "/healthz")) return;
 
   if (isPage) {
     event.respondWith(

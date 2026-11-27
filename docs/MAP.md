@@ -186,6 +186,7 @@ Other docs at the root: `README.md` (overview), `SETUP.md` (run locally),
 | Room code, device name, IP | Signaling server memory | Room TTL (30 min), never written to disk | Server operator |
 | Partial downloads `.dbpart` | Receiver's folder / OPFS | Until finished, resumed or cleared | Receiver |
 | Files received into browser storage | OPFS `dropbeam-inbox` | Until Save + Clear, or 24 h | Receiver's browser |
+| Public stats: per-day totals (rooms created/paired, transfers, bytes, files, same-Wi-Fi/direct/relay counts) | Signaling memory → Cloudflare DO SQLite table `daily_stats` (flushed ~1/min and when the last socket closes); Bun: memory only | Indefinitely (one row per UTC day) | Public at `GET /stats` and the `/stats` page. No IPs, codes, names or per-user rows |
 | Recent transfers list | `localStorage` `dropbeam.history` | Up to 20 entries, Clear button | That device only |
 | App code | Vercel CDN + service-worker cache | Until next deploy | Public |
 

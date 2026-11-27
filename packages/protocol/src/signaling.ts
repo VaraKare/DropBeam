@@ -58,12 +58,29 @@ export interface PingMsg {
   t: number;
 }
 
+/** How the finished transfer's bytes travelled (from the selected ICE pair). */
+export type StatsPath = "direct" | "lan" | "relay";
+
+/**
+ * Sent once by the sender after `complete-ack`, so the server can keep
+ * public aggregate counters (no names, no per-user rows). Fire-and-forget:
+ * the server never replies on success, and servers that predate this message
+ * answer `invalid-message`, which clients ignore.
+ */
+export interface StatsReportMsg {
+  type: "stats";
+  bytes: number;
+  files: number;
+  path: StatsPath;
+}
+
 export type ClientToServerMsg =
   | CreateRoomMsg
   | JoinRoomMsg
   | SignalRelayMsg
   | LeaveRoomMsg
-  | PingMsg;
+  | PingMsg
+  | StatsReportMsg;
 
 // ─── server → client ──────────────────────────────────────────────────────
 
